@@ -64,6 +64,9 @@ if (dbPublicUrl && !isInternalUrl) {
 
 export const pool = new Pool(poolConfig);
 
+// Trust proxy para Railway (necesario para rate limiting)
+app.set('trust proxy', true);
+
 // Middleware de seguridad
 app.use(helmet());
 
