@@ -7,14 +7,17 @@ WORKDIR /app
 COPY package*.json ./
 COPY backend/package*.json ./backend/
 
-# Instalar dependencias
-RUN cd backend && npm ci --omit=dev
-
 # Copiar código fuente del backend
 COPY backend/ ./backend/
 
+# Instalar TODAS las dependencias (necesitamos TypeScript para compilar)
+RUN cd backend && npm ci
+
 # Compilar TypeScript
 RUN cd backend && npm run build
+
+# Eliminar node_modules y reinstalar solo production (para imagen final más pequeña)
+RUN cd backend && rm -rf node_modules && npm ci --omit=dev
 
 # Exponer puerto
 EXPOSE 8080
