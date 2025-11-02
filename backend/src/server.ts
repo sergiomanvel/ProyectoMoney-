@@ -20,6 +20,7 @@ let poolConfig: any = {};
 
 if (process.env.DATABASE_URL) {
   // Railway usa DATABASE_URL
+  console.log('📊 Usando DATABASE_URL para conectar a PostgreSQL');
   poolConfig = {
     connectionString: process.env.DATABASE_URL,
     ssl: {
@@ -28,13 +29,16 @@ if (process.env.DATABASE_URL) {
   };
 } else {
   // Variables individuales
+  const useSSL = process.env.NODE_ENV === 'production' || process.env.DB_HOST?.includes('railway') || process.env.DB_HOST?.includes('rlwy');
+  console.log(`📊 Conectando a PostgreSQL: ${process.env.DB_HOST}:${process.env.DB_PORT}/${process.env.DB_NAME}`);
+  console.log(`🔒 SSL requerido: ${useSSL}`);
   poolConfig = {
     host: process.env.DB_HOST || 'localhost',
     port: parseInt(process.env.DB_PORT || '5432'),
     database: process.env.DB_NAME || 'autoquote',
     user: process.env.DB_USER || 'postgres',
     password: process.env.DB_PASS || '',
-    ssl: process.env.NODE_ENV === 'production' || process.env.DB_HOST?.includes('railway') || process.env.DB_HOST?.includes('rlwy') ? {
+    ssl: useSSL ? {
       rejectUnauthorized: false
     } : false
   };
