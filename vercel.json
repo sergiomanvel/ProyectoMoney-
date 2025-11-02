@@ -1,0 +1,8 @@
+{
+  "version": 2,
+  "buildCommand": "cd frontend && npm ci && npm run build",
+  "outputDirectory": "frontend/dist/autoquote-frontend",
+  "framework": "angular",
+  "devCommand": "cd frontend && npm start"
+}
+
