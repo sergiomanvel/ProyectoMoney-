@@ -15,16 +15,32 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Configurar pool de conexiones a PostgreSQL
-export const pool = new Pool({
-  host: process.env.DB_HOST || 'localhost',
-  port: parseInt(process.env.DB_PORT || '5432'),
-  database: process.env.DB_NAME || 'autoquote',
-  user: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASS || '',
-  ssl: process.env.NODE_ENV === 'production' ? {
-    rejectUnauthorized: false
-  } : false
-});
+// Railway puede usar DATABASE_URL o variables individuales
+let poolConfig: any = {};
+
+if (process.env.DATABASE_URL) {
+  // Railway usa DATABASE_URL
+  poolConfig = {
+    connectionString: process.env.DATABASE_URL,
+    ssl: {
+      rejectUnauthorized: false
+    }
+  };
+} else {
+  // Variables individuales
+  poolConfig = {
+    host: process.env.DB_HOST || 'localhost',
+    port: parseInt(process.env.DB_PORT || '5432'),
+    database: process.env.DB_NAME || 'autoquote',
+    user: process.env.DB_USER || 'postgres',
+    password: process.env.DB_PASS || '',
+    ssl: process.env.NODE_ENV === 'production' ? {
+      rejectUnauthorized: false
+    } : false
+  };
+}
+
+export const pool = new Pool(poolConfig);
 
 // Middleware de seguridad
 app.use(helmet());
