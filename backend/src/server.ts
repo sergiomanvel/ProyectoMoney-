@@ -74,7 +74,12 @@ app.use(helmet());
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutos
   max: 100, // máximo 100 requests por IP
-  message: 'Demasiadas solicitudes desde esta IP, intenta de nuevo más tarde.'
+  message: 'Demasiadas solicitudes desde esta IP, intenta de nuevo más tarde.',
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: {
+    trustProxy: false // Evitamos warnings en Railway
+  }
 });
 app.use(limiter);
 
