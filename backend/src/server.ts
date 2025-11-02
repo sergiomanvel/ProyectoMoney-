@@ -34,7 +34,7 @@ if (process.env.DATABASE_URL) {
     database: process.env.DB_NAME || 'autoquote',
     user: process.env.DB_USER || 'postgres',
     password: process.env.DB_PASS || '',
-    ssl: process.env.NODE_ENV === 'production' ? {
+    ssl: process.env.NODE_ENV === 'production' || process.env.DB_HOST?.includes('railway') || process.env.DB_HOST?.includes('rlwy') ? {
       rejectUnauthorized: false
     } : false
   };
