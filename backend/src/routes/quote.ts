@@ -465,13 +465,22 @@ router.post('/quotes/:id/send-email', async (req, res) => {
     }
 
     // Verificar credenciales SMTP antes de enviar (errores claros)
+    console.log('🔍 Verificando SMTP config:', {
+      host: process.env.SMTP_HOST,
+      port: smtpPort,
+      email: process.env.SMTP_EMAIL,
+      hasPass: !!process.env.SMTP_PASS
+    });
     try {
       await transporter.verify();
+      console.log('✅ SMTP verificado correctamente');
     } catch (e: any) {
-      console.error('SMTP verify error:', e?.message || e);
+      console.error('❌ SMTP verify error:', e?.message || e);
+      console.error('SMTP error code:', e?.code);
       return res.status(500).json({
         error: 'Error de configuración SMTP',
-        message: e?.message || 'Fallo en autenticación/conexión SMTP'
+        message: e?.message || 'Fallo en autenticación/conexión SMTP',
+        code: e?.code
       });
     }
 
