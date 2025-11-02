@@ -1,0 +1,43 @@
+{
+  "name": "autoquote-backend",
+  "version": "1.0.0",
+  "description": "Backend API para AutoQuote",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "nodemon src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "migrate": "node migrate.js",
+    "setup-db": "node setup-db.js",
+    "seed:demo": "ts-node src/seed-demo.ts",
+    "first-run": "npm run setup-db && npm run seed:demo && npm run dev"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "pg": "^8.11.3",
+    "openai": "^4.20.1",
+    "pdfkit": "^0.14.0",
+    "nodemailer": "^6.9.7",
+    "multer": "^1.4.5-lts.1",
+    "helmet": "^7.1.0",
+    "express-rate-limit": "^7.1.5",
+    "ajv": "^8.12.0",
+    "jsonwebtoken": "^9.0.2",
+    "dayjs": "^1.11.10"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/cors": "^2.8.17",
+    "@types/pg": "^8.10.9",
+    "@types/pdfkit": "^0.12.12",
+    "@types/nodemailer": "^6.4.14",
+    "@types/multer": "^1.4.11",
+    "@types/node": "^20.10.0",
+    "@types/jsonwebtoken": "^9.0.6",
+    "typescript": "^5.3.2",
+    "nodemon": "^3.0.2",
+    "ts-node": "^10.9.1"
+  }
+}

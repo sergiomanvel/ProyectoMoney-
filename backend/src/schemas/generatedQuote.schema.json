@@ -1,0 +1,50 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "GeneratedQuote",
+  "type": "object",
+  "required": ["title", "sector", "client", "items", "subtotal", "taxPercent", "taxAmount", "total", "terms", "validUntil", "projectDescription"],
+  "properties": {
+    "title": { "type": "string", "minLength": 5 },
+    "sector": { 
+      "type": "string",
+      "enum": ["software", "marketing", "construccion", "eventos", "consultoria", "comercio", "manufactura", "formacion", "otro", "general"]
+    },
+    "client": {
+      "type": "object",
+      "required": ["name", "email"],
+      "properties": {
+        "name": { "type": "string", "minLength": 2 },
+        "email": { "type": "string", "format": "email" }
+      }
+    },
+    "projectDescription": { "type": "string", "minLength": 10 },
+    "items": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 7,
+      "items": {
+        "type": "object",
+        "required": ["description", "quantity", "unitPrice", "total"],
+        "properties": {
+          "description": { "type": "string", "minLength": 5 },
+          "quantity": { "type": "number", "minimum": 1 },
+          "unitPrice": { "type": "number", "minimum": 0 },
+          "total": { "type": "number", "minimum": 0 }
+        }
+      }
+    },
+    "subtotal": { "type": "number", "minimum": 0 },
+    "taxPercent": { "type": "number", "minimum": 0 },
+    "taxAmount": { "type": "number", "minimum": 0 },
+    "total": { "type": "number", "minimum": 0 },
+    "terms": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1
+    },
+    "validUntil": { "type": "string", "format": "date" },
+    "summary": { "type": "string", "minLength": 10 }
+  }
+}
+
+
