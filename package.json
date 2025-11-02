@@ -1,9 +1,13 @@
 {
-  "name": "autoquote",
+  "name": "autoquote-root",
   "version": "1.0.0",
   "description": "SaaS para generar cotizaciones automáticas con IA",
   "main": "index.js",
+  "private": true,
   "scripts": {
+    "install": "cd backend && npm install",
+    "build": "cd backend && npm run build",
+    "start": "cd backend && npm run start",
     "dev": "concurrently \"npm run backend\" \"npm run frontend\"",
     "backend": "cd backend && npm run dev",
     "frontend": "cd frontend && npm start",

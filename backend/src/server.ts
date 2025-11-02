@@ -21,6 +21,9 @@ export const pool = new Pool({
   database: process.env.DB_NAME || 'autoquote',
   user: process.env.DB_USER || 'postgres',
   password: process.env.DB_PASS || '',
+  ssl: process.env.NODE_ENV === 'production' ? {
+    rejectUnauthorized: false
+  } : false
 });
 
 // Middleware de seguridad
@@ -48,12 +51,24 @@ app.use(express.urlencoded({ extended: true }));
 app.use('/api', quoteRoutes);
 
 // Ruta de salud
-app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'OK', 
-    timestamp: new Date().toISOString(),
-    service: 'AutoQuote API'
-  });
+app.get('/health', async (req, res) => {
+  try {
+    const result = await pool.query("SELECT 1 as ok");
+    return res.json({ 
+      ok: true, 
+      db: true, 
+      timestamp: new Date().toISOString(),
+      service: 'AutoQuote API'
+    });
+  } catch (err) {
+    return res.status(500).json({ 
+      ok: false, 
+      db: false, 
+      error: (err as Error).message,
+      timestamp: new Date().toISOString(),
+      service: 'AutoQuote API'
+    });
+  }
 });
 
 // Middleware de manejo de errores
@@ -71,9 +86,17 @@ app.use('*', (req, res) => {
 });
 
 // Iniciar servidor
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`🚀 Servidor AutoQuote ejecutándose en puerto ${PORT}`);
   console.log(`📊 Health check: http://localhost:${PORT}/health`);
+  
+  // Test conexión a PostgreSQL
+  try {
+    await pool.connect();
+    console.log('✅ Conectado a PostgreSQL en Railway');
+  } catch (err) {
+    console.error('❌ Error conectando a PostgreSQL en Railway:', err);
+  }
 });
 
 // Manejo de cierre graceful
