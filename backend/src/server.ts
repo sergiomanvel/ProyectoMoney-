@@ -83,11 +83,13 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-// CORS
-app.use(cors({
-  origin: process.env.FRONTEND_URL || (process.env.NODE_ENV === 'production' ? '*' : 'http://localhost:4200'),
-  credentials: process.env.NODE_ENV !== 'production'
-}));
+// CORS - Permitir cualquier origen en producción
+const corsOptions = {
+  origin: true, // Permitir cualquier origen
+  credentials: false,
+  optionsSuccessStatus: 200
+};
+app.use(cors(corsOptions));
 
 // Middleware para parsing
 app.use(express.json({ limit: '10mb' }));
