@@ -55,8 +55,8 @@ app.use(limiter);
 
 // CORS
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:4200',
-  credentials: true
+  origin: process.env.FRONTEND_URL || (process.env.NODE_ENV === 'production' ? '*' : 'http://localhost:4200'),
+  credentials: process.env.NODE_ENV !== 'production'
 }));
 
 // Middleware para parsing
