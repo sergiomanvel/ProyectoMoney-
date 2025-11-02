@@ -682,13 +682,24 @@ export class QuoteViewerComponent {
     this.isSendingEmail = true;
     this.errorMessage = '';
 
+    // Timeout de seguridad de 30 segundos
+    const timeoutId = setTimeout(() => {
+      if (this.isSendingEmail) {
+        this.isSendingEmail = false;
+        this.errorMessage = 'El servidor tardó mucho en responder. Verifica tu conexión.';
+        setTimeout(() => this.errorMessage = '', 5000);
+      }
+    }, 30000);
+
     this.quoteService.sendEmail(this.quoteId).subscribe({
       next: (response) => {
+        clearTimeout(timeoutId);
         this.isSendingEmail = false;
         this.successMessage = response.message;
         setTimeout(() => this.successMessage = '', 5000);
       },
       error: (error) => {
+        clearTimeout(timeoutId);
         this.isSendingEmail = false;
         this.errorMessage = 'Error enviando el email';
         console.error('Error enviando email:', error);
