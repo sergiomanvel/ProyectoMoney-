@@ -3,13 +3,35 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const pool = new Pool({
-  host: process.env.DB_HOST || 'localhost',
-  port: parseInt(process.env.DB_PORT || '5432'),
-  database: process.env.DB_NAME || 'autoquote',
-  user: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASS || '',
-});
+// Configurar pool igual que en server.ts para Railway
+const dbPublicUrl = process.env.DATABASE_PUBLIC_URL;
+const dbUrl = process.env.DATABASE_URL;
+const isInternalUrl = dbPublicUrl?.includes('railway.internal') || dbUrl?.includes('railway.internal');
+
+let poolConfig: any = {};
+if (dbPublicUrl && !isInternalUrl) {
+  poolConfig = {
+    connectionString: dbPublicUrl,
+    ssl: { rejectUnauthorized: false }
+  };
+} else if (dbUrl && !isInternalUrl) {
+  poolConfig = {
+    connectionString: dbUrl,
+    ssl: { rejectUnauthorized: false }
+  };
+} else {
+  const useSSL = process.env.NODE_ENV === 'production' || process.env.DB_HOST?.includes('railway') || process.env.DB_HOST?.includes('rlwy');
+  poolConfig = {
+    host: process.env.DB_HOST || 'localhost',
+    port: parseInt(process.env.DB_PORT || '5432'),
+    database: process.env.DB_NAME || 'autoquote',
+    user: process.env.DB_USER || 'postgres',
+    password: process.env.DB_PASS || '',
+    ssl: useSSL ? { rejectUnauthorized: false } : false
+  };
+}
+
+const pool = new Pool(poolConfig);
 
 export async function createTables() {
   try {
