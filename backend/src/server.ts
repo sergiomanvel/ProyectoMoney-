@@ -64,6 +64,11 @@ if (dbPublicUrl && !isInternalUrl) {
 
 export const pool = new Pool(poolConfig);
 
+// Manejar errores del pool
+pool.on('error', (err, client) => {
+  console.error('❌ Unexpected error on idle client', err);
+});
+
 // Trust proxy para Railway (necesario para rate limiting)
 app.set('trust proxy', true);
 
