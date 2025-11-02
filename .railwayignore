@@ -3,8 +3,8 @@ node_modules
 .github
 dist
 frontend
-frontend/dist
-frontend/.angular
+frontend/**/*
+frontend/*.json
 uploads
 tmp
 *.log

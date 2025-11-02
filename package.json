@@ -13,7 +13,7 @@
     "frontend": "cd frontend && npm start",
     "install-all": "npm install && cd backend && npm install && cd ../frontend && npm install"
   },
-  "keywords": ["saas", "quotes", "ai", "pdf", "angular", "nodejs"],
+  "keywords": ["saas", "quotes", "ai", "pdf", "nodejs"],
   "author": "AutoQuote Team",
   "license": "MIT",
   "devDependencies": {
