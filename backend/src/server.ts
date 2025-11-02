@@ -12,7 +12,7 @@ import quoteRoutes from './routes/quote';
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 
 // Configurar pool de conexiones a PostgreSQL
 // Railway puede usar DATABASE_PUBLIC_URL, DATABASE_URL o variables individuales
@@ -95,6 +95,22 @@ app.use(express.urlencoded({ extended: true }));
 
 // Rutas
 app.use('/api', quoteRoutes);
+
+// Ruta raíz
+app.get('/', (req, res) => {
+  res.json({
+    ok: true,
+    service: "AutoQuote API",
+    version: "1.0.0",
+    endpoints: [
+      "/health",
+      "/api/generate-quote",
+      "/api/quotes",
+      "/api/quotes/:id",
+      "/api/quotes/:id/pdf"
+    ]
+  });
+});
 
 // Ruta de salud
 app.get('/health', async (req, res) => {
