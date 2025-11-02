@@ -25,6 +25,10 @@ EXPOSE 8080
 # Variables de entorno serán inyectadas por Railway
 ENV NODE_ENV=production
 
+# Copiar script de inicio que ejecuta migración
+COPY backend/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
 # Comando de inicio
-CMD ["node", "backend/dist/server.js"]
+CMD ["/entrypoint.sh"]
 
