@@ -7,7 +7,7 @@
   "scripts": {
     "install": "cd backend && npm install",
     "build": "cd backend && npm run build",
-    "start": "cd backend && npm run start",
+    "start": "node index.js",
     "dev": "concurrently \"npm run backend\" \"npm run frontend\"",
     "backend": "cd backend && npm run dev",
     "frontend": "cd frontend && npm start",
