@@ -1,6 +1,8 @@
 {
-  "buildCommand": "npm install -g @angular/cli && cd frontend && npm ci && npm run build -- --configuration=production",
-  "outputDirectory": "frontend/dist/autoquote-frontend",
-  "framework": "angular"
+  "buildCommand": "npm install -g @angular/cli && npm run build --configuration=production",
+  "outputDirectory": "dist/autoquote-frontend",
+  "framework": "angular",
+  "installCommand": "npm ci",
+  "devCommand": "npm start"
 }
 
