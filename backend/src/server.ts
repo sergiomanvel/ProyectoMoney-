@@ -15,11 +15,20 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Configurar pool de conexiones a PostgreSQL
-// Railway puede usar DATABASE_URL o variables individuales
+// Railway puede usar DATABASE_PUBLIC_URL, DATABASE_URL o variables individuales
 let poolConfig: any = {};
 
-if (process.env.DATABASE_URL) {
-  // Railway usa DATABASE_URL
+if (process.env.DATABASE_PUBLIC_URL) {
+  // Railway usa DATABASE_PUBLIC_URL (recomendado para evitar egress fees en producción)
+  console.log('📊 Usando DATABASE_PUBLIC_URL para conectar a PostgreSQL');
+  poolConfig = {
+    connectionString: process.env.DATABASE_PUBLIC_URL,
+    ssl: {
+      rejectUnauthorized: false
+    }
+  };
+} else if (process.env.DATABASE_URL) {
+  // Railway usa DATABASE_URL (URL interna)
   console.log('📊 Usando DATABASE_URL para conectar a PostgreSQL');
   poolConfig = {
     connectionString: process.env.DATABASE_URL,
