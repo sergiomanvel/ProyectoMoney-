@@ -18,20 +18,29 @@ const PORT = process.env.PORT || 3000;
 // Railway puede usar DATABASE_PUBLIC_URL, DATABASE_URL o variables individuales
 let poolConfig: any = {};
 
-if (process.env.DATABASE_PUBLIC_URL) {
-  // Railway usa DATABASE_PUBLIC_URL (recomendado para evitar egress fees en producción)
+// Detectar si DATABASE_PUBLIC_URL contiene URL interna (no funciona desde contenedores)
+const dbPublicUrl = process.env.DATABASE_PUBLIC_URL;
+const dbUrl = process.env.DATABASE_URL;
+const isInternalUrl = dbPublicUrl?.includes('railway.internal') || dbUrl?.includes('railway.internal');
+
+if (isInternalUrl) {
+  console.log('⚠️  Detectada URL interna de Railway. Usando variables individuales o construyendo URL pública.');
+}
+
+if (dbPublicUrl && !isInternalUrl) {
+  // Railway usa DATABASE_PUBLIC_URL (URL pública - recomendado)
   console.log('📊 Usando DATABASE_PUBLIC_URL para conectar a PostgreSQL');
   poolConfig = {
-    connectionString: process.env.DATABASE_PUBLIC_URL,
+    connectionString: dbPublicUrl,
     ssl: {
       rejectUnauthorized: false
     }
   };
-} else if (process.env.DATABASE_URL) {
-  // Railway usa DATABASE_URL (URL interna)
+} else if (dbUrl && !isInternalUrl) {
+  // Railway usa DATABASE_URL (URL pública)
   console.log('📊 Usando DATABASE_URL para conectar a PostgreSQL');
   poolConfig = {
-    connectionString: process.env.DATABASE_URL,
+    connectionString: dbUrl,
     ssl: {
       rejectUnauthorized: false
     }
