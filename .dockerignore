@@ -1,0 +1,16 @@
+node_modules
+.git
+.github
+dist
+frontend
+uploads
+tmp
+*.log
+.env
+.env.local
+.env.development
+backend/uploads/*
+backend/node_modules
+backend/dist
+!backend/uploads/.gitkeep
+
