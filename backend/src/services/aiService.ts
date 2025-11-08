@@ -12,6 +12,19 @@ import { sectorTemplates, sectorRewritePrefixes } from '../config/sectorTemplate
 import { ARCHITECTURE_TEMPLATES, ARCHITECTURE_PRICE_WEIGHTS, CONTRACTOR_PRICE_WEIGHTS } from '../config/architectureTemplates';
 import { sanitizeArchitectureItems } from '../utils/architectureSanitizer';
 import dayjs from 'dayjs';
+import { estimateProjectCost, CostEstimateResult } from '../utils/costEstimator';
+import { analyzeProjectContext, ProjectContext } from '../utils/contextAnalyzer';
+import { QuoteHistoryService, PriceSuggestionResult } from './quoteHistoryService';
+
+export type QualityLevel = 'basico' | 'estandar' | 'premium';
+
+interface QualityConfig {
+  priceMultiplier: number;
+  marginOffset: number;
+  styleGuidance: string;
+  maxItems?: number;
+  minItems?: number;
+}
 
 // Cargar .env por si este módulo se importa antes que el server
 dotenv.config();
@@ -37,7 +50,8 @@ export class AIService {
   static async generateQuote(
     projectDescription: string,
     clientName: string,
-    priceRange: string
+    priceRange: string,
+    qualityLevel: QualityLevel = 'estandar'
   ): Promise<GeneratedQuote | { error: true; type: string; message: string }> {
     // ==========================================
     // 🟣 ETAPA 1: INPUT VALIDATION
@@ -53,18 +67,23 @@ export class AIService {
       };
     }
 
+    const normalizedQuality = this.normalizeQualityLevel(qualityLevel);
+    const qualityConfig = this.getQualityConfig(normalizedQuality);
+    let projectContext = analyzeProjectContext(projectDescription, priceRange);
+
     try {
+
       // Modo demo: saltar llamada a OpenAI y usar fallback seguro
       const isDemo = String(process.env.DEMO_MODE || '').toLowerCase() === 'true';
       if (isDemo) {
         console.log('🤖 DEMO_MODE activo: usando generador local sin llamar a OpenAI');
-        return await this.generateFallbackQuote(projectDescription, clientName, priceRange);
+        return await this.generateFallbackQuote(projectDescription, clientName, priceRange, normalizedQuality, projectContext);
       }
 
       const apiKey = process.env.OPENAI_API_KEY;
       if (!apiKey) {
         console.warn('⚠️ OPENAI_API_KEY ausente: generando con fallback local');
-        return await this.generateFallbackQuote(projectDescription, clientName, priceRange);
+        return await this.generateFallbackQuote(projectDescription, clientName, priceRange, normalizedQuality, projectContext);
       }
 
       // ==========================================
@@ -86,7 +105,25 @@ export class AIService {
       // ==========================================
       // 🟣 ETAPA 3: AI QUOTE GENERATION
       // ==========================================
-      const prompt = this.buildContextAwarePrompt(projectDescription, clientName, priceRange, sector);
+      const archContext = this.detectArchitectureContext(projectDescription, sector);
+      projectContext = analyzeProjectContext(projectDescription, priceRange, undefined, sector);
+
+      const costEstimate = estimateProjectCost({
+        sector,
+        priceRange,
+        archContext,
+        context: projectContext
+      });
+      const prompt = this.buildContextAwarePrompt(
+        projectDescription,
+        clientName,
+        priceRange,
+        sector,
+        archContext,
+        projectContext,
+        qualityConfig,
+        normalizedQuality
+      );
       
       const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
       const completion = await openai.chat.completions.create({
@@ -94,7 +131,7 @@ export class AIService {
         messages: [
           {
             role: "system",
-            content: this.getSystemPrompt()
+            content: this.getSystemPrompt(sector, archContext)
           },
           {
             role: "user",
@@ -143,7 +180,7 @@ export class AIService {
       const qualityCheck = this.postAICheck(raw, sector);
       if (!qualityCheck.valid) {
         console.log('⚠️ [Stage 4] Quality check falló:', qualityCheck.reason);
-        return await this.generateFallbackQuote(projectDescription, clientName, priceRange);
+        return await this.generateFallbackQuote(projectDescription, clientName, priceRange, normalizedQuality, projectContext);
       }
 
       // Validación JSON Schema
@@ -153,7 +190,7 @@ export class AIService {
 
       if (!valid) {
         console.error('❌ [Stage 4] JSON Schema inválido:', validate.errors);
-        return await this.generateFallbackQuote(projectDescription, clientName, priceRange);
+        return await this.generateFallbackQuote(projectDescription, clientName, priceRange, normalizedQuality, projectContext);
       }
 
       // Mapear al modelo interno GeneratedQuote
@@ -172,11 +209,15 @@ export class AIService {
       );
       
       // 2. Distribuir precios de forma realista
+      const desiredTotal = Math.round(((data.total ?? costEstimate.targetTotal) || costEstimate.targetTotal) * qualityConfig.priceMultiplier);
       const priceDistribution = distributeTotalsByWeight(
         refinedItems,
-        data.total,
+        desiredTotal,
         sector,
-        data.taxPercent || config.defaultTaxPercent
+        data.taxPercent || config.defaultTaxPercent,
+        archContext,
+        costEstimate,
+        qualityConfig.marginOffset
       );
       
       // 3. Construir título profesional
@@ -189,7 +230,7 @@ export class AIService {
       const commercialSummary = await generateCommercialSummary(
         projectDescription,
         clientName,
-        data.total,
+        desiredTotal,
         openai
       );
       
@@ -208,7 +249,9 @@ export class AIService {
         sector: sector,
         meta: {
           aestheticAdjusted: priceDistribution.aestheticAdjusted,
-          generatedBy: 'ai-full'
+          generatedBy: 'ai-full',
+          projectContext,
+          qualityLevel: normalizedQuality
         }
       };
 
@@ -226,7 +269,7 @@ export class AIService {
       console.error('❌ Error generando cotización con IA:', error);
       
       // Fallback: generar cotización básica
-      return await this.generateFallbackQuote(projectDescription, clientName, priceRange);
+      return await this.generateFallbackQuote(projectDescription, clientName, priceRange, normalizedQuality, projectContext);
     }
   }
 
@@ -499,10 +542,18 @@ export class AIService {
   /**
    * Sistema de prompt profesional
    */
-  private static getSystemPrompt(): string {
+  private static getSystemPrompt(
+    sector?: string,
+    archContext?: { isArchitecture: boolean; mode: "architect" | "contractor"; subtype?: "anteproyecto" | "full" }
+  ): string {
+    const sectorVoice = this.getSectorVoice(sector, archContext);
+
     return `Eres un asistente experto en elaboración de cotizaciones profesionales y reales para empresas y freelancers.
 
 Tu misión es crear presupuestos claros, adaptados al SECTOR detectado, con lenguaje formal y coherente.
+
+Guía de estilo y terminología que debes seguir sin repetir literalmente los ejemplos:
+${sectorVoice}
 
 IMPORTANTE:
 - Nunca inventes servicios absurdos o irreales
@@ -512,6 +563,219 @@ IMPORTANTE:
 - RESPONDE SOLO JSON, SIN TEXTO ANTES NI DESPUÉS`;
   }
 
+  private static getSectorVoice(
+    sector?: string,
+    archContext?: { isArchitecture: boolean; mode: "architect" | "contractor"; subtype?: "anteproyecto" | "full" }
+  ): string {
+    if (archContext?.isArchitecture && archContext.mode === "architect") {
+      return `- Perfil: Arquitecto senior responsable de proyecto ejecutivo y supervisión.
+- Tono: Técnico, riguroso, orientado a normativas y coordinación multidisciplinaria.
+- Vocabulario recomendado: anteproyecto, proyecto ejecutivo, memoria descriptiva, coordinación de especialidades, cumplimiento normativo, supervisión de obra.
+- Ejemplo inspiracional (no copiar literal): "Coordinación de especialidades estructurales y de instalaciones para asegurar compatibilidad con el proyecto ejecutivo."`;
+    }
+
+    if (archContext?.isArchitecture && archContext.mode === "contractor") {
+      return `- Perfil: Contratista general enfocado en ejecución física y logística de obra.
+- Tono: Directo, orientado a recursos, seguridad y entrega en obra.
+- Vocabulario recomendado: suministro de materiales, mano de obra especializada, control de calidad, puesta en marcha, seguridad en obra.
+- Ejemplo inspiracional (no copiar literal): "Suministro e instalación de paneles de yeso con mano de obra certificada y control de calidad por tramo."`;
+    }
+
+    switch (sector) {
+      case 'software':
+        return `- Perfil: Director de proyectos de desarrollo de software.
+- Tono: Consultivo, enfocado en entregables, metodología y calidad del código.
+- Vocabulario recomendado: análisis funcional, arquitectura de software, APIs REST, pruebas QA, DevOps, despliegue continuo, soporte post-lanzamiento.
+- Ejemplo inspiracional (no copiar literal): "Implementación de APIs REST seguras y documentadas para sincronizar inventarios en tiempo real."`;
+      case 'marketing':
+        return `- Perfil: Estratega de marketing digital senior.
+- Tono: Comercial, orientado a resultados y métricas.
+- Vocabulario recomendado: auditoría de marca, estrategia de contenidos, pauta digital, conversiones, KPI, analítica, community management.
+- Ejemplo inspiracional (no copiar literal): "Producción de piezas creativas y guiones para campaña omnicanal enfocada en generación de leads."`;
+      case 'construccion':
+        return `- Perfil: Ingeniero residente de obra civil.
+- Tono: Técnico, concreto, orientado a cumplimiento de especificaciones y seguridad.
+- Vocabulario recomendado: movimiento de tierras, cimentación, estructura, acabados, normativas locales, control de calidad, bitácora de obra.
+- Ejemplo inspiracional (no copiar literal): "Ejecución de losa de cimentación con supervisión estructural y pruebas de resistencia."`;
+      case 'eventos':
+        return `- Perfil: Productor ejecutivo de eventos corporativos.
+- Tono: Logístico, detallado, orientado a experiencia del asistente y coordinación de proveedores.
+- Vocabulario recomendado: plan de producción, escenografía, rider técnico, montaje, cronograma, hospitality, desmontaje.
+- Ejemplo inspiracional (no copiar literal): "Coordinación integral de montaje de escenarios, iluminación y sonorización para ceremonia inaugural."`;
+      case 'consultoria':
+        return `- Perfil: Consultor senior especializado en estrategia y transformación.
+- Tono: Analítico, estructurado y orientado a impacto de negocio.
+- Vocabulario recomendado: diagnóstico, benchmark, plan de acción, implementación, gestión del cambio, KPI, acompañamiento ejecutivo.
+- Ejemplo inspiracional (no copiar literal): "Elaboración de roadmap de transformación digital con hitos trimestrales y métricas de adopción."`;
+      case 'comercio':
+        return `- Perfil: Especialista en operaciones y retail.
+- Tono: Comercial, enfocado en optimización de procesos y experiencia de compra.
+- Vocabulario recomendado: layout de tienda, visual merchandising, inventarios, capacitación comercial, CRM, fidelización.
+- Ejemplo inspiracional (no copiar literal): "Reingeniería de layout y planogramas para aumentar rotación de categorías clave."`;
+      case 'manufactura':
+        return `- Perfil: Ingeniero industrial responsable de planta.
+- Tono: Preciso, enfocado en eficiencia operativa y control de calidad.
+- Vocabulario recomendado: línea de producción, balanceo, OEE, mantenimiento preventivo, documentación técnica, certificaciones.
+- Ejemplo inspiracional (no copiar literal): "Implementación de sistema Andon y capacitación del personal para reducir tiempos de parada."`;
+      case 'formacion':
+        return `- Perfil: Coordinador académico de programas de capacitación.
+- Tono: Didáctico, claro y enfocado en resultados de aprendizaje.
+- Vocabulario recomendado: diseño instruccional, materiales didácticos, sesiones sincrónicas, evaluación, certificación, seguimiento post-curso.
+- Ejemplo inspiracional (no copiar literal): "Diseño de material didáctico interactivo y rúbricas de evaluación para el programa de liderazgo."`;
+      default:
+        return `- Perfil: Consultor de negocios con experiencia multisectorial.
+- Tono: Profesional, claro y orientado a valor para el cliente.
+- Vocabulario recomendado: alcance del servicio, entregables, cronograma, métricas de éxito, soporte, condiciones comerciales.
+- Ejemplo inspiracional (no copiar literal): "Acompañamiento integral en la implementación del servicio con seguimiento de indicadores clave."`;
+    }
+  }
+
+  private static getProjectContextPrompt(context?: ProjectContext): string {
+    if (!context) return '';
+    const lines: string[] = [];
+    if (context.locationHint) {
+      lines.push(`- Ubicación estimada del proyecto: ${context.locationHint}`);
+    }
+    if (context.scaleOverride) {
+      lines.push(`- Escala estimada del proyecto: ${context.scaleOverride}`);
+    }
+    if (context.timelineWeeks) {
+      lines.push(`- Plazo objetivo inferido: ${context.timelineWeeks} semanas`);
+    }
+    if (context.urgencyMultiplier && context.urgencyMultiplier > 1) {
+      lines.push(`- Urgencia detectada: ${context.urgencyReason || 'Alta prioridad'}`);
+    }
+    if (lines.length === 0) return '';
+    return `Contexto adicional del proyecto:\n${lines.join('\n')}\n`;
+  }
+
+  private static detectSectorSpecialization(sector: string, projectDescription: string): string | undefined {
+    const desc = projectDescription.toLowerCase();
+    switch (sector) {
+      case 'software':
+        if (desc.includes('ecommerce') || desc.includes('tienda')) return 'desarrollador especializado en comercio electrónico';
+        if (desc.includes('mobile') || desc.includes('app')) return 'arquitecto de aplicaciones móviles';
+        if (desc.includes('erp') || desc.includes('integración')) return 'consultor de integración y sistemas ERP';
+        return 'director técnico de desarrollo de software';
+      case 'marketing':
+        if (desc.includes('social') || desc.includes('instagram') || desc.includes('tiktok')) return 'estratega de social media';
+        if (desc.includes('seo') || desc.includes('sem')) return 'especialista en SEO/SEM';
+        if (desc.includes('eventos') || desc.includes('activaciones')) return 'planner de marketing experiencial';
+        return 'director de marketing digital';
+      case 'construccion':
+        if (desc.includes('residencial') || desc.includes('vivienda')) return 'constructor especializado en obra residencial';
+        if (desc.includes('industrial') || desc.includes('nave')) return 'ingeniero residente de obra industrial';
+        if (desc.includes('interior') || desc.includes('remodelación')) return 'contratista de remodelaciones interiores';
+        return 'contratista general de construcción';
+      case 'consultoria':
+        if (desc.includes('rrhh') || desc.includes('talento')) return 'consultor sénior en recursos humanos';
+        if (desc.includes('tecnología') || desc.includes('digital')) return 'consultor en transformación digital';
+        if (desc.includes('finanzas') || desc.includes('financiero')) return 'consultor financiero corporativo';
+        return 'consultor estratégico senior';
+      case 'eventos':
+        if (desc.includes('corporativo')) return 'productor ejecutivo de eventos corporativos';
+        if (desc.includes('boda') || desc.includes('social')) return 'planner de eventos sociales premium';
+        return 'productor integral de eventos';
+      case 'manufactura':
+        if (desc.includes('lean') || desc.includes('mejora')) return 'ingeniero industrial experto en lean manufacturing';
+        if (desc.includes('automatización')) return 'especialista en automatización de plantas';
+        return 'gerente de operaciones industriales';
+      case 'formacion':
+        if (desc.includes('soft skills') || desc.includes('liderazgo')) return 'coordinador académico de programas de liderazgo';
+        if (desc.includes('tecnología') || desc.includes('programación')) return 'diseñador instruccional en tecnología';
+        return 'director de programas de formación corporativa';
+      case 'ecommerce':
+        if (desc.includes('shopify') || desc.includes('magento')) return 'consultor de plataformas ecommerce';
+        if (desc.includes('marketplace')) return 'gerente de operaciones marketplace';
+        return 'especialista en crecimiento ecommerce';
+      default:
+        if (desc.includes('finanzas') || desc.includes('financiero')) return 'consultor de servicios financieros';
+        if (desc.includes('legal')) return 'asesor legal corporativo';
+        return undefined;
+    }
+  }
+
+  private static buildRoleDeclaration(
+    sector: string,
+    projectDescription: string,
+    archContext?: { isArchitecture: boolean; mode: "architect" | "contractor"; subtype?: "anteproyecto" | "full" }
+  ): string {
+    if (archContext?.isArchitecture) {
+      if (archContext.mode === 'architect') {
+        return 'Escribe como un arquitecto senior responsable del proyecto (diseño, documentación técnica, coordinación de especialidades).';
+      }
+      return 'Escribe como un contratista general de obra civil enfocado en ejecución, logística y control de calidad.';
+    }
+
+    const specialization = this.detectSectorSpecialization(sector, projectDescription);
+    if (specialization) {
+      return `Escribe como si fueras un ${specialization}, usando terminología técnica precisa.`;
+    }
+
+    return `Escribe como un profesional experimentado del sector ${sector}, manteniendo un tono técnico y creíble.`;
+  }
+
+  private static normalizeQualityLevel(value?: string): QualityLevel {
+    const normalized = (value || '').toLowerCase();
+    if (normalized === 'basico' || normalized === 'básico') return 'basico';
+    if (normalized === 'premium') return 'premium';
+    return 'estandar';
+  }
+
+  private static getQualityConfig(level: QualityLevel): QualityConfig {
+    switch (level) {
+      case 'basico':
+        return {
+          priceMultiplier: 0.9,
+          marginOffset: -0.03,
+          styleGuidance: 'Usa descripciones concisas (20-35 palabras) y enfoque en tareas esenciales. Mantén el tono directo y práctico.',
+          maxItems: 5,
+          minItems: 3
+        };
+      case 'premium':
+        return {
+          priceMultiplier: 1.1,
+          marginOffset: 0.05,
+          styleGuidance: 'Redacta con detalle (40-60 palabras), enfatizando valor agregado, acompañamiento estratégico y entregables exclusivos.',
+          minItems: 5
+        };
+      default:
+        return {
+          priceMultiplier: 1,
+          marginOffset: 0,
+          styleGuidance: 'Mantén un tono profesional equilibrado (30-45 palabras) destacando alcance, entregables y metodología.'
+        };
+    }
+  }
+
+  private static blendHistoricTotal(baseTotal: number, suggestion?: PriceSuggestionResult): { total: number; note?: string } {
+    if (!suggestion || !suggestion.suggestedAverage || !Number.isFinite(suggestion.suggestedAverage)) {
+      return { total: baseTotal };
+    }
+
+    const suggested = suggestion.suggestedAverage;
+    const blended = Math.round((baseTotal * 0.6) + (suggested * 0.4));
+    const note = QuoteHistoryService.buildPricingNote(suggestion);
+    return {
+      total: blended,
+      note
+    };
+  }
+
+  private static adjustConceptsForQuality(concepts: string[], config: QualityConfig): string[] {
+    let adjusted = [...concepts];
+    if (config.maxItems && adjusted.length > config.maxItems) {
+      adjusted = adjusted.slice(0, config.maxItems);
+    }
+    if (config.minItems && adjusted.length < config.minItems) {
+      const filler = 'Seguimiento y soporte adicional para garantizar resultados.';
+      while (adjusted.length < config.minItems) {
+        adjusted.push(filler);
+      }
+    }
+    return adjusted;
+  }
+
   /**
    * 🟣 ETAPA 3: Construye prompt context-aware
    */
@@ -519,9 +783,24 @@ IMPORTANTE:
     projectDescription: string,
     clientName: string,
     priceRange: string,
-    sector: string
+    sector: string,
+    archContext?: { isArchitecture: boolean; mode: "architect" | "contractor"; subtype?: "anteproyecto" | "full" },
+    projectContext?: ProjectContext,
+    qualityConfig?: QualityConfig,
+    qualityLevel: QualityLevel = 'estandar',
+    historySnippets: string[] = [],
+    pricingNote?: string
   ): string {
     const cfg = getAppConfig();
+    const sectorVoice = this.getSectorVoice(sector, archContext);
+    const contextNotes = this.getProjectContextPrompt(projectContext);
+    const qualityNotes = qualityConfig
+      ? `NIVEL DE CALIDAD: ${qualityLevel.toUpperCase()}\n- Estilo esperado: ${qualityConfig.styleGuidance}`
+      : '';
+    const historyNotes = historySnippets.length
+      ? `CASOS SIMILARES DEL MISMO USUARIO:\n${historySnippets.join('\n')}\n`
+      : '';
+    const pricingSection = pricingNote ? `${pricingNote}\n` : '';
 
     // Contexto específico por sector
     const sectorContext = this.getSectorContext(sector);
@@ -529,9 +808,19 @@ IMPORTANTE:
     return `
 Genera una cotización comercial PROFESIONAL y REALISTA.
 
+PAUTAS DE ESTILO POR SECTOR (no copies literalmente los ejemplos, solo inspírate):
+${sectorVoice}
+
+${qualityNotes}
+
 SECTOR DETECTADO: ${sector}
 
 ${sectorContext}
+
+${contextNotes}
+
+${historyNotes}
+${pricingSection}
 
 CLIENTE: ${clientName}
 DESCRIPCIÓN: ${projectDescription}
@@ -691,17 +980,53 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
   private static async generateFallbackQuote(
     projectDescription: string,
     clientName: string,
-    priceRange: string
+    priceRange: string,
+    qualityLevel: QualityLevel = 'estandar',
+    existingContext?: ProjectContext,
+    adjustedCostEstimate?: CostEstimateResult,
+    _historySnippets: string[] = [],
+    _pricingNote?: string
   ): Promise<GeneratedQuote> {
-    const basePrice = this.extractBasePrice(priceRange);
-    const cfg = getAppConfig();
-    const taxPercent = cfg.defaultTaxPercent / 100;
-
     // Clasificar sector localmente
     const sector = this.classifySectorLocal(projectDescription);
     
     // 🏗️ Detectar arquitectura
     const archContext = this.detectArchitectureContext(projectDescription, sector);
+
+    const initialContext = existingContext ?? analyzeProjectContext(projectDescription, priceRange);
+    const projectContext = analyzeProjectContext(
+      projectDescription,
+      priceRange,
+      initialContext.locationHint,
+      sector
+    );
+    if (initialContext.locationMultiplier && !projectContext.locationMultiplier) {
+      projectContext.locationMultiplier = initialContext.locationMultiplier;
+    }
+    if (initialContext.urgencyMultiplier && !projectContext.urgencyMultiplier) {
+      projectContext.urgencyMultiplier = initialContext.urgencyMultiplier;
+      projectContext.urgencyReason = projectContext.urgencyReason ?? initialContext.urgencyReason;
+    }
+    if (initialContext.timelineWeeks && !projectContext.timelineWeeks) {
+      projectContext.timelineWeeks = initialContext.timelineWeeks;
+    }
+    if (!projectContext.fluctuationWarning && initialContext.fluctuationWarning) {
+      projectContext.fluctuationWarning = initialContext.fluctuationWarning;
+    }
+    const normalizedQuality = this.normalizeQualityLevel(qualityLevel);
+    const qualityConfig = this.getQualityConfig(normalizedQuality);
+    const baseEstimate = estimateProjectCost({
+      sector,
+      priceRange,
+      archContext: archContext.isArchitecture ? archContext : undefined,
+      context: projectContext
+    });
+    const costEstimate = adjustedCostEstimate
+      ? { ...baseEstimate, ...adjustedCostEstimate }
+      : baseEstimate;
+    const basePrice = Math.round(costEstimate.targetTotal * qualityConfig.priceMultiplier);
+    const cfg = getAppConfig();
+    const taxPercent = cfg.defaultTaxPercent / 100;
     
     // 🏭 Usar templates del sector (o arquitectura si aplica)
     console.log(`🏭 [Fallback-Template] Usando plantillas del sector: ${sector}`);
@@ -715,6 +1040,7 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
     } else {
       baseConcepts = sectorTemplates[sector] || sectorTemplates['general'];
     }
+    baseConcepts = this.adjustConceptsForQuality(baseConcepts, qualityConfig);
     
     // Contextualizar localmente
     let contextualizedItems = await this.contextualizeItemsLocal(
@@ -738,7 +1064,9 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
       basePrice,
       sector,
       cfg.defaultTaxPercent,
-      archContext
+      archContext,
+      costEstimate,
+      qualityConfig.marginOffset
     );
     
     // Título profesional
@@ -766,27 +1094,14 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
       summary: commercialSummary,
       sector: sector,
       timeline: timeline,
+      fluctuationWarning: projectContext.fluctuationWarning,
       meta: {
         aestheticAdjusted: priceDistribution.aestheticAdjusted,
-        generatedBy: 'template-fallback'
+        generatedBy: 'template-fallback',
+        projectContext,
+        qualityLevel: normalizedQuality
       }
     };
-  }
-
-  /**
-   * Extrae precio base del rango
-   */
-  private static extractBasePrice(priceRange: string): number {
-    const numbers = priceRange.match(/\d+/g);
-    if (numbers && numbers.length > 0) {
-      if (numbers.length >= 2) {
-        const min = parseInt(numbers[0]) * 1000;
-        const max = parseInt(numbers[1]) * 1000;
-        return Math.round((min + max) / 2);
-      }
-      return parseInt(numbers[0]) * 1000;
-    }
-    return 50000; // Precio por defecto
   }
 
   /**
@@ -811,7 +1126,10 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
     clientName: string,
     priceRange: string,
     userSector?: string,
-    userItems?: Array<{ description: string; quantity: number; unitPrice: number }>
+    userItems?: Array<{ description: string; quantity: number; unitPrice: number }>,
+    qualityLevel: string = 'estandar',
+    projectLocation?: string,
+    ownerId?: string
   ): Promise<GeneratedQuote | { error: true; type: string; message: string }> {
     // ==========================================
     // 🟣 ETAPA 1: INPUT VALIDATION
@@ -829,19 +1147,57 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
 
     // Sanitizar items del usuario si existen
     const sanitizedItems = userItems ? this.sanitizeUserItems(userItems) : [];
+    const normalizedQuality = this.normalizeQualityLevel(qualityLevel);
+    const projectContext = analyzeProjectContext(projectDescription, priceRange, projectLocation, userSector);
+
+    const resolvedOwnerId = (ownerId || 'anonymous').trim().toLowerCase();
+    let historySnippets: string[] = [];
+    let priceSuggestion: PriceSuggestionResult | undefined;
+    let pricingNote: string | undefined;
 
     try {
       // Modo demo: saltar llamada a OpenAI y usar fallback seguro
       const isDemo = String(process.env.DEMO_MODE || '').toLowerCase() === 'true';
+
       if (isDemo) {
         console.log('🤖 DEMO_MODE activo: usando generador local sin llamar a OpenAI');
-        return await this.generateFallbackQuoteWithItems(projectDescription, clientName, priceRange, userSector, sanitizedItems);
+        const history = await QuoteHistoryService.findRelevantHistory(resolvedOwnerId, userSector, 5);
+        historySnippets = QuoteHistoryService.buildPromptSnippets(history);
+        priceSuggestion = await QuoteHistoryService.suggestPriceFromHistory(resolvedOwnerId, projectDescription, userSector);
+        pricingNote = QuoteHistoryService.buildPricingNote(priceSuggestion);
+        return await this.generateFallbackQuoteWithItems(
+          projectDescription,
+          clientName,
+          priceRange,
+          userSector,
+          sanitizedItems,
+          normalizedQuality,
+          projectContext,
+          historySnippets,
+          priceSuggestion,
+          pricingNote
+        );
       }
 
       const apiKey = process.env.OPENAI_API_KEY;
       if (!apiKey) {
         console.warn('⚠️ OPENAI_API_KEY ausente: generando con fallback local');
-        return await this.generateFallbackQuoteWithItems(projectDescription, clientName, priceRange, userSector, sanitizedItems);
+        const history = await QuoteHistoryService.findRelevantHistory(resolvedOwnerId, userSector, 5);
+        historySnippets = QuoteHistoryService.buildPromptSnippets(history);
+        priceSuggestion = await QuoteHistoryService.suggestPriceFromHistory(resolvedOwnerId, projectDescription, userSector);
+        pricingNote = QuoteHistoryService.buildPricingNote(priceSuggestion);
+        return await this.generateFallbackQuoteWithItems(
+          projectDescription,
+          clientName,
+          priceRange,
+          userSector,
+          sanitizedItems,
+          normalizedQuality,
+          projectContext,
+          historySnippets,
+          priceSuggestion,
+          pricingNote
+        );
       }
 
       // ==========================================
@@ -880,6 +1236,11 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
       // ==========================================
       let quote: GeneratedQuote;
 
+      const history = await QuoteHistoryService.findRelevantHistory(resolvedOwnerId, sector, 5);
+      historySnippets = QuoteHistoryService.buildPromptSnippets(history);
+      priceSuggestion = await QuoteHistoryService.suggestPriceFromHistory(resolvedOwnerId, projectDescription, sector);
+      pricingNote = QuoteHistoryService.buildPricingNote(priceSuggestion);
+
       if (sanitizedItems && sanitizedItems.length > 0) {
         // 👤 USUARIO PROPORCIONÓ ITEMS → Usarlos como base
         console.log('✅ Usuario proporcionó items, usando como fuente de verdad');
@@ -890,7 +1251,12 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
           sector, 
           sanitizedItems,
           apiKey,
-          archContext
+          archContext,
+          normalizedQuality,
+          projectContext,
+          historySnippets,
+          priceSuggestion,
+          pricingNote
         );
       } else {
         // 🤖 GENERAR COMPLETAMENTE CON IA
@@ -901,9 +1267,33 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
           priceRange,
           sector,
           apiKey,
-          archContext
+          archContext,
+          normalizedQuality,
+          projectContext,
+          historySnippets,
+          priceSuggestion,
+          pricingNote
         );
       }
+
+      if (projectContext.fluctuationWarning) {
+        quote.fluctuationWarning = projectContext.fluctuationWarning;
+      }
+
+      quote.meta = {
+        ...(quote.meta ?? {}),
+        projectContext,
+        ...(priceSuggestion
+          ? {
+              historicalPricing: {
+                suggestedAverage: priceSuggestion.suggestedAverage,
+                low: priceSuggestion.low,
+                high: priceSuggestion.high,
+                similarQuoteIds: priceSuggestion.similarQuotes.map(entry => entry.id)
+              }
+            }
+          : {})
+      };
 
       return quote;
 
@@ -911,7 +1301,26 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
       console.error('❌ Error generando cotización:', error);
       
       // Fallback: generar cotización básica
-      return await this.generateFallbackQuoteWithItems(projectDescription, clientName, priceRange, userSector, sanitizedItems);
+      if (historySnippets.length === 0) {
+        const history = await QuoteHistoryService.findRelevantHistory(resolvedOwnerId, userSector, 5);
+        historySnippets = QuoteHistoryService.buildPromptSnippets(history);
+      }
+      if (!priceSuggestion) {
+        priceSuggestion = await QuoteHistoryService.suggestPriceFromHistory(resolvedOwnerId, projectDescription, userSector);
+      }
+      pricingNote = pricingNote || QuoteHistoryService.buildPricingNote(priceSuggestion);
+      return await this.generateFallbackQuoteWithItems(
+        projectDescription,
+        clientName,
+        priceRange,
+        userSector,
+        sanitizedItems,
+        normalizedQuality,
+        projectContext,
+        historySnippets,
+        priceSuggestion,
+        pricingNote
+      );
     }
   }
 
@@ -945,12 +1354,26 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
     sector: string,
     userItems: Array<{ description: string; quantity: number; unitPrice: number }>,
     apiKey: string,
-    archContext?: { isArchitecture: boolean; mode: "architect" | "contractor"; subtype?: "anteproyecto" | "full" }
+    archContext?: { isArchitecture: boolean; mode: "architect" | "contractor"; subtype?: "anteproyecto" | "full" },
+    qualityLevel: QualityLevel = 'estandar',
+    existingContext?: ProjectContext,
+    historySnippets: string[] = [],
+    priceSuggestion?: PriceSuggestionResult,
+    pricingNote?: string
   ): Promise<GeneratedQuote> {
     const openai = new OpenAI({ apiKey });
+    const normalizedQuality = this.normalizeQualityLevel(qualityLevel);
+    const qualityConfig = this.getQualityConfig(normalizedQuality);
+    const projectContext = existingContext ?? analyzeProjectContext(projectDescription, priceRange, undefined, sector);
+    const costEstimate = estimateProjectCost({
+      sector,
+      priceRange,
+      archContext,
+      context: projectContext
+    });
     
     // Distribuir precios si faltan
-    let itemsWithPrices = this.distributePricesToUserItems(userItems, priceRange);
+    let itemsWithPrices = this.distributePricesToUserItems(userItems, priceRange, sector, archContext);
     
     // Sanitizar items en modo arquitecto (eliminar vocabulario de contratista)
     if (archContext?.isArchitecture && archContext.mode === "architect") {
@@ -966,11 +1389,23 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
     const cfg = getAppConfig();
     const taxPercent = cfg.defaultTaxPercent / 100;
     const taxAmount = subtotal * taxPercent;
-    const total = subtotal + taxAmount;
+    const total = (subtotal + taxAmount) * qualityConfig.priceMultiplier;
 
     // Usar IA solo para enriquecer: título, términos, resumen
+    const effectivePricingNote = pricingNote || QuoteHistoryService.buildPricingNote(priceSuggestion);
+
     try {
-      const prompt = this.buildEnrichmentPrompt(projectDescription, clientName, sector, itemsWithPrices);
+      const prompt = this.buildEnrichmentPrompt(
+        projectDescription,
+        clientName,
+        sector,
+        itemsWithPrices,
+        archContext,
+        projectContext,
+        qualityConfig,
+        historySnippets,
+        effectivePricingNote
+      );
       
       const completion = await openai.chat.completions.create({
         model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
@@ -1008,7 +1443,9 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
           total,
           sector,
           cfg.defaultTaxPercent,
-          archContext
+          archContext,
+          costEstimate,
+          qualityConfig.marginOffset
         );
         
         // 2. Construir título profesional
@@ -1042,9 +1479,12 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
           summary: commercialSummary,
           sector: sector,
           timeline: timeline,
+          fluctuationWarning: projectContext.fluctuationWarning,
           meta: {
             aestheticAdjusted: priceDistribution.aestheticAdjusted,
-            generatedBy: 'user-items'
+            generatedBy: 'user-items',
+            projectContext,
+            qualityLevel: normalizedQuality
           }
         };
       }
@@ -1067,7 +1507,9 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
       total,
       sector,
       cfg.defaultTaxPercent,
-      archContext
+      archContext,
+      costEstimate,
+      qualityConfig.marginOffset
     );
     
     const professionalTitle = buildQuoteTitle(projectDescription, sector, archContext);
@@ -1088,9 +1530,12 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
       summary: commercialSummary,
       sector: sector,
       timeline: timeline,
+      fluctuationWarning: projectContext.fluctuationWarning,
       meta: {
         aestheticAdjusted: priceDistribution.aestheticAdjusted,
-        generatedBy: 'user-items-fallback'
+        generatedBy: 'user-items-fallback',
+        projectContext,
+        qualityLevel: normalizedQuality
       }
     };
   }
@@ -1104,10 +1549,31 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
     priceRange: string,
     sector: string,
     apiKey: string,
-    archContext?: { isArchitecture: boolean; mode: "architect" | "contractor"; subtype?: "anteproyecto" | "full" }
+    archContext?: { isArchitecture: boolean; mode: "architect" | "contractor"; subtype?: "anteproyecto" | "full" },
+    qualityLevel: QualityLevel = 'estandar',
+    existingContext?: ProjectContext,
+    historySnippets: string[] = [],
+    priceSuggestion?: PriceSuggestionResult,
+    pricingNote?: string
   ): Promise<GeneratedQuote> {
     const openai = new OpenAI({ apiKey });
     const config = getAppConfig();
+    const projectContext = existingContext ?? analyzeProjectContext(projectDescription, priceRange, undefined, sector);
+    const normalizedQuality = this.normalizeQualityLevel(qualityLevel);
+    const qualityConfig = this.getQualityConfig(normalizedQuality);
+    const costEstimate = estimateProjectCost({
+      sector,
+      priceRange,
+      archContext,
+      context: projectContext
+    });
+    const blend = this.blendHistoricTotal(costEstimate.targetTotal, priceSuggestion);
+    const targetTotal = blend.total;
+    const effectivePricingNote = pricingNote || blend.note;
+    const adjustedCostEstimate = {
+      ...costEstimate,
+      targetTotal
+    };
     
     // 🎯 NUEVO PIPELINE: Usar templates base y contextualizar
     console.log(`🏭 [Template-Based] Usando plantillas del sector: ${sector}`);
@@ -1124,6 +1590,7 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
       baseConcepts = sectorTemplates[sector] || sectorTemplates['general'];
       console.log(`📋 Template base tiene ${baseConcepts.length} conceptos`);
     }
+    baseConcepts = this.adjustConceptsForQuality(baseConcepts, qualityConfig);
     
     // 2. Intentar contextualizar con OpenAI
     let contextualizedItems: Array<{ description: string; quantity: number; unitPrice: number; total: number }>;
@@ -1134,7 +1601,10 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
         projectDescription,
         sector,
         baseConcepts,
-        archContext
+        archContext,
+        qualityConfig,
+        historySnippets,
+        effectivePricingNote
       );
       console.log('✅ Items contextualizados con OpenAI');
     } catch (error) {
@@ -1155,9 +1625,8 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
     }
     
     // 3. Calcular precios
-    const basePrice = this.extractBasePrice(priceRange);
+    const basePrice = Math.round(targetTotal * qualityConfig.priceMultiplier);
     const taxPercent = config.defaultTaxPercent / 100;
-    const subtotal = basePrice / (1 + taxPercent);
     
     // 4. Distribuir precios (con pesos especiales para arquitectura)
     const priceDistribution = distributeTotalsByWeight(
@@ -1165,7 +1634,9 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
       basePrice,
       sector,
       config.defaultTaxPercent,
-      archContext
+      archContext,
+      adjustedCostEstimate,
+      qualityConfig.marginOffset
     );
     
     // 5. Generar metadatos profesionales
@@ -1193,9 +1664,12 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
       summary: commercialSummary,
       sector: sector,
       timeline: timeline,
+      fluctuationWarning: projectContext.fluctuationWarning,
       meta: {
         aestheticAdjusted: priceDistribution.aestheticAdjusted,
-        generatedBy: 'ai-template'
+        generatedBy: 'ai-template',
+        projectContext,
+        qualityLevel: normalizedQuality
       }
     };
   }
@@ -1208,19 +1682,39 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
     projectDescription: string,
     sector: string,
     baseConcepts: string[],
-    archContext?: { isArchitecture: boolean; mode: "architect" | "contractor" }
+    archContext?: { isArchitecture: boolean; mode: "architect" | "contractor" },
+    qualityConfig?: QualityConfig,
+    historySnippets: string[] = [],
+    pricingNote?: string
   ): Promise<Array<{ description: string; quantity: number; unitPrice: number; total: number }>> {
+    const sectorVoice = this.getSectorVoice(sector, archContext);
+    const roleDeclaration = this.buildRoleDeclaration(sector, projectDescription, archContext);
+    const qualityStyle = qualityConfig?.styleGuidance
+      ? `- Estilo según nivel de calidad: ${qualityConfig.styleGuidance}`
+      : '';
+    const historyBlock = historySnippets.length
+      ? `REFERENCIAS HISTÓRICAS DEL MISMO USUARIO:\n${historySnippets.join('\n')}\n\n`
+      : '';
+    const pricingBlock = pricingNote ? `${pricingNote}\n\n` : '';
+
     // Si es arquitectura y modo arquitecto, usar prompt especial
     let prompt: string;
     if (archContext?.isArchitecture && archContext.mode === "architect") {
-      prompt = `Eres un arquitecto senior que elabora propuestas técnicas y económicas. A partir de la descripción del proyecto y de una lista base de fases, debes reescribir los conceptos para que suenen profesionales y propios de un despacho de arquitectura.
+      prompt = `${roleDeclaration}
+A partir de la descripción del proyecto y de una lista base de fases, reescribe los conceptos para que suenen profesionales y propios de un despacho de arquitectura.
 
 PROYECTO: "${projectDescription}"
+
+${historyBlock}${pricingBlock}
 
 CONCEPTOS BASE A CONTEXTUALIZAR:
 ${baseConcepts.map((c, i) => `${i + 1}. ${c}`).join('\n')}
 
 IMPORTANTE:
+- Pautas de estilo (no copies literal, solo inspírate):
+${sectorVoice}
+- Ajustes de calidad:
+${qualityStyle || '- Mantén el nivel estándar indicado.'}
 - Incluye términos arquitectónicos: "proyecto ejecutivo", "memoria descriptiva", "coordinación con especialidades", "supervisión de obra", "cumplimiento de normativas"
 - NO conviertas la propuesta en un presupuesto de materiales ni mano de obra
 - NO incluyas "suministro" ni "mano de obra" a menos que la descripción lo pida expresamente
@@ -1230,15 +1724,22 @@ IMPORTANTE:
 DEVUELVE SOLO JSON con este array:
 ["Concepto 1 adaptado", "Concepto 2 adaptado", ...]`;
     } else {
-      prompt = `Eres un especialista en redacción de cotizaciones profesionales. A partir de un sector y una descripción de proyecto, debes ADAPTAR los conceptos de una cotización para que suenen específicos, profesionales y relacionados con el caso.
+      prompt = `${roleDeclaration}
+A partir de un sector y una descripción de proyecto, adapta los conceptos de una cotización para que suenen específicos, profesionales y relacionados con el caso.
 
 PROYECTO: "${projectDescription}"
 SECTOR: ${sector}
+
+${historyBlock}${pricingBlock}
 
 CONCEPTOS BASE A CONTEXTUALIZAR:
 ${baseConcepts.map((c, i) => `${i + 1}. ${c}`).join('\n')}
 
 IMPORTANTE:
+- Pautas de estilo (no copies literal, solo inspírate):
+${sectorVoice}
+- Ajustes de calidad:
+${qualityStyle || '- Mantén el nivel estándar indicado.'}
 - Adapta cada concepto al proyecto específico
 - Usa vocabulario profesional del sector
 - Si es médico → menciona pacientes, citas, historial clínico
@@ -1364,12 +1865,26 @@ DEVUELVE SOLO JSON con este array:
     projectDescription: string,
     clientName: string,
     sector: string,
-    items: Array<{ description: string; quantity: number; unitPrice: number }>
+    items: Array<{ description: string; quantity: number; unitPrice: number }>,
+    archContext?: { isArchitecture: boolean; mode: "architect" | "contractor"; subtype?: "anteproyecto" | "full" },
+    projectContext?: ProjectContext,
+    qualityConfig?: QualityConfig,
+    historySnippets: string[] = [],
+    pricingNote?: string
   ): string {
     const cfg = getAppConfig();
     const itemsText = items.map((item, i) => 
       `${i + 1}. ${item.description} (Cantidad: ${item.quantity}, Precio: $${item.unitPrice})`
     ).join('\n');
+    const sectorVoice = this.getSectorVoice(sector, archContext);
+    const contextNotes = this.getProjectContextPrompt(projectContext);
+    const qualityNotes = qualityConfig
+      ? `NIVEL DE CALIDAD: ${qualityConfig.styleGuidance}`
+      : '';
+    const historyNotes = historySnippets.length
+      ? `REFERENCIAS DE COTIZACIONES PREVIAS DEL MISMO USUARIO:\n${historySnippets.join('\n')}\n`
+      : '';
+    const pricingSection = pricingNote ? `${pricingNote}\n` : '';
 
     return `
 Enriquece esta cotización profesional generando título, términos y resumen.
@@ -1377,6 +1892,16 @@ Enriquece esta cotización profesional generando título, términos y resumen.
 CLIENTE: ${clientName}
 SECTOR: ${sector}
 DESCRIPCIÓN: ${projectDescription}
+
+PAUTAS DE ESTILO POR SECTOR (inspírate, no copies literal):
+${sectorVoice}
+
+${qualityNotes}
+
+${contextNotes}
+
+${historyNotes}
+${pricingSection}
 
 CONCEPTOS YA DEFINIDOS:
 ${itemsText}
@@ -1397,7 +1922,9 @@ IMPORTANTE: Respeta los conceptos definidos, solo enriquece título y términos.
    */
   private static distributePricesToUserItems(
     items: Array<{ description: string; quantity: number; unitPrice: number }>,
-    priceRange: string
+    priceRange: string,
+    sector?: string,
+    archContext?: { isArchitecture: boolean; mode: "architect" | "contractor"; subtype?: "anteproyecto" | "full" }
   ): Array<{ description: string; quantity: number; unitPrice: number }> {
     // Contar items que necesitan precio
     const itemsWithoutPrice = items.filter(item => !item.unitPrice || item.unitPrice === 0);
@@ -1407,8 +1934,12 @@ IMPORTANTE: Respeta los conceptos definidos, solo enriquece título y términos.
       return items;
     }
 
-    // Extraer precio base del rango
-    const basePrice = this.extractBasePrice(priceRange);
+    const costEstimate = estimateProjectCost({
+      sector: sector || 'general',
+      priceRange,
+      archContext: archContext?.isArchitecture ? archContext : undefined
+    });
+    const basePrice = costEstimate.targetTotal;
 
     // Si solo uno sin precio, usar todo el rango
     if (itemsWithoutPrice.length === 1 && items.length === 1) {
@@ -1437,16 +1968,46 @@ IMPORTANTE: Respeta los conceptos definidos, solo enriquece título y términos.
     clientName: string,
     priceRange: string,
     userSector?: string,
-    userItems?: Array<{ description: string; quantity: number; unitPrice: number }>
+    userItems?: Array<{ description: string; quantity: number; unitPrice: number }>,
+    qualityLevel: QualityLevel = 'estandar',
+    existingContext?: ProjectContext,
+    historySnippets: string[] = [],
+    priceSuggestion?: PriceSuggestionResult,
+    pricingNote?: string
   ): Promise<GeneratedQuote> {
+    const archContext = this.detectArchitectureContext(projectDescription, userSector);
+    const normalizedQuality = this.normalizeQualityLevel(qualityLevel);
+    const qualityConfig = this.getQualityConfig(normalizedQuality);
+    const projectContext = existingContext ?? analyzeProjectContext(projectDescription, priceRange, undefined, userSector);
+    const costEstimate = estimateProjectCost({
+      sector: userSector || this.classifySectorLocal(projectDescription),
+      priceRange,
+      archContext: archContext.isArchitecture ? archContext : undefined,
+      context: projectContext
+    });
+    const blend = this.blendHistoricTotal(costEstimate.targetTotal, priceSuggestion);
+    const targetTotal = blend.total;
+    const effectivePricingNote = pricingNote || blend.note;
+    const adjustedCostEstimate = {
+      ...costEstimate,
+      targetTotal
+    };
     // Si hay items del usuario, usarlos
     if (userItems && userItems.length > 0) {
-      const itemsWithPrices = this.distributePricesToUserItems(userItems, priceRange);
+      const itemsWithPrices = this.distributePricesToUserItems(
+        userItems,
+        priceRange,
+        userSector,
+        archContext
+      );
       const subtotal = itemsWithPrices.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0);
       const cfg = getAppConfig();
       const taxPercent = cfg.defaultTaxPercent / 100;
       const tax = subtotal * taxPercent;
-      const total = subtotal + tax;
+      const baseTotal = subtotal + tax;
+      const adjustedSubtotal = subtotal * qualityConfig.priceMultiplier;
+      const adjustedTotal = baseTotal * qualityConfig.priceMultiplier;
+      const adjustedTax = adjustedTotal - adjustedSubtotal;
 
       return {
         title: `COTIZACIÓN - ${projectDescription.substring(0, 50)}`,
@@ -1455,19 +2016,33 @@ IMPORTANTE: Respeta los conceptos definidos, solo enriquece título y términos.
         items: itemsWithPrices.map(item => ({
           description: item.description,
           quantity: item.quantity,
-          unitPrice: item.unitPrice,
-          total: item.quantity * item.unitPrice
+          unitPrice: parseFloat((item.unitPrice * qualityConfig.priceMultiplier).toFixed(2)),
+          total: parseFloat((item.quantity * item.unitPrice * qualityConfig.priceMultiplier).toFixed(2))
         })),
-        subtotal,
-        tax,
-        total,
+        subtotal: adjustedSubtotal,
+        tax: adjustedTax,
+        total: adjustedTotal,
         validUntil: dayjs().add(30, 'day').format('YYYY-MM-DD'),
-        terms: this.getDefaultTerms()
+        terms: this.getDefaultTerms(),
+        fluctuationWarning: projectContext.fluctuationWarning,
+        meta: {
+          qualityLevel: normalizedQuality,
+          projectContext
+        }
       };
     }
 
     // Si no hay items, usar generador normal
-    return await this.generateFallbackQuote(projectDescription, clientName, priceRange);
+    return await this.generateFallbackQuote(
+      projectDescription,
+      clientName,
+      priceRange,
+      normalizedQuality,
+      projectContext,
+      adjustedCostEstimate,
+      historySnippets,
+      effectivePricingNote
+    );
   }
 
   /**

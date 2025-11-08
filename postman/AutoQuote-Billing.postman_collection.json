@@ -1,0 +1,63 @@
+{
+  "info": {
+    "name": "AutoQuote Billing",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Create Checkout Session",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "url": { "raw": "http://localhost:3000/api/billing/create-checkout-session", "host": ["http://localhost:3000"], "path": ["api","billing","create-checkout-session"] },
+        "body": { "mode": "raw", "raw": "{\n  \"successUrl\": \"http://localhost:4200/billing/success\",\n  \"cancelUrl\": \"http://localhost:4200/billing/cancel\"\n}" }
+      }
+    },
+    {
+      "name": "Webhook (sample)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Paddle-Signature", "value": "<signature>" },
+          { "key": "Paddle-Request-Time", "value": "{{NOW_UNIX}}" }
+        ],
+        "url": { "raw": "http://localhost:3000/api/billing/webhook", "host": ["http://localhost:3000"], "path": ["api","billing","webhook"] },
+        "body": { "mode": "raw", "raw": "{\n  \"id\": \"evt_demo_123\",\n  \"type\": \"subscription.updated\",\n  \"data\": {\n    \"id\": \"sub_demo_123\",\n    \"status\": \"active\",\n    \"items\": [{ \"price\": { \"id\": \"{{PADDLE_PRICE_ID}}\" } }],\n    \"current_billing_period\": {\n      \"starts_at\": \"2025-01-01T00:00:00Z\",\n      \"ends_at\": \"2025-02-01T00:00:00Z\"\n    }\n  }\n}" }
+      }
+    },
+    {
+      "name": "Get Subscription",
+      "request": {
+        "method": "GET",
+        "url": { "raw": "http://localhost:3000/api/billing/subscription", "host": ["http://localhost:3000"], "path": ["api","billing","subscription"] }
+      }
+    },
+    {
+      "name": "Buyer Portal",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "url": { "raw": "http://localhost:3000/api/billing/portal", "host": ["http://localhost:3000"], "path": ["api","billing","portal"] },
+        "body": { "mode": "raw", "raw": "{\n  \"customerId\": \"{{PADDLE_CUSTOMER_ID}}\",\n  \"returnUrl\": \"http://localhost:4200/billing/status\"\n}" }
+      }
+    },
+    {
+      "name": "Create Checkout (KRW locale)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "url": { "raw": "http://localhost:3000/api/billing/create-checkout-session", "host": ["http://localhost:3000"], "path": ["api","billing","create-checkout-session"] },
+        "body": { "mode": "raw", "raw": "{\n  \"locale\": \"ko_KR\",\n  \"currency\": \"KRW\",\n  \"successUrl\": \"http://localhost:4200/billing/success\",\n  \"cancelUrl\": \"http://localhost:4200/billing/cancel\"\n}" }
+      }
+    }
+  ]
+}
+
+

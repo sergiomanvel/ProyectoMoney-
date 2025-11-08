@@ -270,6 +270,12 @@ SMTP_PASS=tu-app-password-de-16-caracteres
 - `GET /api/config` - Obtener configuración pública de la app
 - `GET /api/email/test` - Probar conexión SMTP
 
+### Billing (Paddle)
+- `POST /api/billing/create-checkout-session` - Crea sesión de checkout (Paddle)
+- `POST /api/billing/webhook` - Webhook seguro de Paddle (firma + idempotencia)
+- `GET /api/billing/subscription` - Obtiene la suscripción actual (demo)
+- `POST /api/billing/cancel` - Cancela la suscripción actual
+
 ### Ejemplo de Generación
 ```bash
 curl -X POST http://localhost:3000/api/generate-quote \

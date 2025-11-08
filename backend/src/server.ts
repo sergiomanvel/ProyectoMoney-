@@ -11,7 +11,7 @@ import quoteRoutes from './routes/quote';
 // Cargar variables de entorno
 dotenv.config();
 
-const app = express();
+export const app = express();
 const PORT = process.env.PORT || 8080;
 
 // Configurar pool de conexiones a PostgreSQL
@@ -69,13 +69,16 @@ pool.on('error', (err, client) => {
   console.error('❌ Unexpected error on idle client', err);
 });
 
-// Trust proxy para Railway (necesario para rate limiting)
-app.set('trust proxy', true);
+// Trust proxy condicional (solo si detrás de proxy conocido)
+const enableTrustProxy = String(process.env.TRUST_PROXY || '').toLowerCase() === 'true';
+if (enableTrustProxy) {
+  app.set('trust proxy', true);
+}
 
 // Middleware de seguridad
 app.use(helmet());
 
-// Rate limiting
+// Rate limiting - ajustar según trust proxy
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutos
   max: 100, // máximo 100 requests por IP
@@ -83,25 +86,42 @@ const limiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   validate: {
-    trustProxy: false // Evitamos warnings en Railway
-  }
+    trustProxy: enableTrustProxy // Usar trust proxy si está habilitado
+  },
+  // Si trust proxy está activo, usar X-Forwarded-For para obtener IP real
+  ...(enableTrustProxy ? {
+    skip: (req) => {
+      // Ignorar health checks en rate limit si se desea
+      return req.path === '/health';
+    }
+  } : {})
 });
 app.use(limiter);
 
-// CORS - Permitir cualquier origen en producción
-const corsOptions = {
-  origin: true, // Permitir cualquier origen
+// CORS - Whitelist por ALLOWED_ORIGINS (csv) o FRONTEND_URL
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL || '').split(',').map(o => o.trim()).filter(Boolean);
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error('Not allowed by CORS'));
+  },
   credentials: false,
   optionsSuccessStatus: 200
-};
-app.use(cors(corsOptions));
+}));
 
-// Middleware para parsing
+// Body parser especial para webhook (necesita cuerpo crudo para verificar firma)
+app.use('/api/billing/webhook', express.raw({ type: 'application/json' }));
+// Middleware para parsing JSON general
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // Rutas
 app.use('/api', quoteRoutes);
+import paddleRoutes from './routes/paddle.routes';
+app.use('/api', paddleRoutes);
 
 // Ruta raíz
 app.get('/', (req, res) => {
@@ -114,7 +134,12 @@ app.get('/', (req, res) => {
       "/api/generate-quote",
       "/api/quotes",
       "/api/quotes/:id",
-      "/api/quotes/:id/pdf"
+      "/api/quotes/:id/pdf",
+      "/api/billing/create-checkout-session",
+      "/api/billing/webhook",
+      "/api/billing/subscription",
+      "/api/billing/cancel",
+      "/api/billing/portal"
     ]
   });
 });
@@ -155,7 +180,7 @@ app.use('*', (req, res) => {
 });
 
 // Iniciar servidor
-app.listen(PORT, async () => {
+if (process.env.NODE_ENV !== 'test') app.listen(PORT, async () => {
   console.log(`🚀 Servidor AutoQuote ejecutándose en puerto ${PORT}`);
   console.log(`📊 Health check: http://localhost:${PORT}/health`);
   

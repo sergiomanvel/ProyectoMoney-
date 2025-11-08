@@ -37,3 +37,29 @@ JWT_SECRET=dev_super_secret_change_me
 # Si es true, la app funciona sin claves externas (OpenAI/SMTP)
 # y fuerza comportamientos seguros para pruebas locales.
 DEMO_MODE=false
+
+# Billing / Paddle
+PAYMENTS_PROVIDER=paddle
+PADDLE_ENV=sandbox
+PADDLE_VENDOR_ID=
+PADDLE_API_KEY=pdl_sdbx_apikey_01k99thby5wj7259cqy0wzbp9y_ddYGsV34xft4q3h1ZR87Aq_A7d
+PADDLE_SIGNING_SECRET=
+PADDLE_PRICE_ID=
+BILLING_SUCCESS_URL=http://localhost:4200/billing/success
+BILLING_CANCEL_URL=http://localhost:4200/billing/cancel
+ALLOWED_ORIGINS=https://proyecto-money.vercel.app,http://localhost:4200
+BILLING_ENFORCE=false
+TRUST_PROXY=false
+
+# Localización
+PADDLE_DEFAULT_LOCALE=es_ES
+PADDLE_DEFAULT_CURRENCY=USD
+
+# Buyer Portal
+PADDLE_BUYER_PORTAL_ENABLED=true
+
+# Subdominio personalizado de checkout (early access)
+PADDLE_CHECKOUT_SUBDOMAIN=
+
+# CARL Compliance (California)
+PADDLE_CARL_ENABLED=false

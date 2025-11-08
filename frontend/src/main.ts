@@ -7,6 +7,8 @@ import { FormsModule, ReactiveFormsModule } from '@angular/forms';
 import { registerLocaleData } from '@angular/common';
 import localeEsMX from '@angular/common/locales/es-MX';
 import { QuoteViewerPublicComponent } from './app/components/quote-viewer-public/quote-viewer-public.component';
+import { BillingPlansComponent } from './app/components/billing-plans/billing-plans.component';
+import { BillingStatusComponent } from './app/components/billing-status/billing-status.component';
 import { AppComponent } from './app/app.component';
 
 // Registrar locale español (México) para formato de moneda/fecha
@@ -17,6 +19,10 @@ const routes: Routes = [
     path: 'quote/view',
     component: QuoteViewerPublicComponent
   },
+  { path: 'billing/plans', component: BillingPlansComponent },
+  { path: 'billing/status', component: BillingStatusComponent },
+  { path: 'billing/success', component: BillingStatusComponent },
+  { path: 'billing/cancel', component: BillingPlansComponent },
   {
     path: '',
     component: AppComponent

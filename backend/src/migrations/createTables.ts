@@ -121,6 +121,51 @@ export async function createTables() {
       CREATE INDEX IF NOT EXISTS idx_quote_items_quote_id ON quote_items(quote_id);
     `);
 
+    // Historial de cotizaciones por usuario
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS quote_history (
+        id SERIAL PRIMARY KEY,
+        owner_id VARCHAR(191) NOT NULL,
+        quote_id INTEGER REFERENCES quotes(id) ON DELETE SET NULL,
+        client_name VARCHAR(255),
+        client_email VARCHAR(255),
+        sector VARCHAR(120),
+        title TEXT,
+        project_description TEXT,
+        project_location VARCHAR(255),
+        price_range VARCHAR(120),
+        quality_level VARCHAR(20),
+        total_amount NUMERIC(12,2),
+        item_count INTEGER,
+        items JSONB,
+        project_context JSONB,
+        embedding JSONB,
+        generated_by VARCHAR(120),
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_quote_history_owner ON quote_history(owner_id);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_quote_history_owner_sector ON quote_history(owner_id, sector);
+    `);
+
+    await pool.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name='quote_history' AND column_name='embedding'
+        ) THEN
+          ALTER TABLE quote_history ADD COLUMN embedding JSONB;
+        END IF;
+      END
+      $$;
+    `);
+
     console.log('✅ Tablas creadas exitosamente');
     console.log('📊 Tablas "quotes" y "quote_items" listas para usar');
 

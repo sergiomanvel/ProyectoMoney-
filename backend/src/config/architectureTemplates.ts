@@ -9,22 +9,28 @@ export const ARCHITECTURE_TEMPLATES = {
    * Templates para arquitectos: proyecto, documentación, supervisión
    */
   architect: [
-    "Levantamiento de información, análisis del sitio y requisitos del cliente",
-    "Elaboración de anteproyecto arquitectónico (plantas, alzados, distribución)",
-    "Desarrollo de proyecto ejecutivo: detalles constructivos, instalaciones, acabados",
-    "Coordinación con especialidades (estructuras, instalaciones, HVAC) si aplica",
-    "Supervisión técnica y control de obra conforme a planos aprobados",
-    "Entrega de documentación final, planos actualizados (as-built) y memoria"
+    "Levantamiento topográfico, normativo y programa arquitectónico",
+    "Conceptualización y anteproyecto con plantas, alzados y renders",
+    "Proyecto arquitectónico ejecutivo con detalles constructivos y acabados",
+    "Coordinación de ingenierías estructurales, instalaciones y sostenibilidad",
+    "Gestión de tramitología, licencias y documentación para permisos",
+    "Supervisión arquitectónica y control de calidad durante la obra",
+    "Revisión de pruebas, listas de punch list y entrega de obra conforme",
+    "Elaboración de planos as-built, memoria descriptiva y manuales de uso"
   ],
 
   /**
    * Templates para contratistas: suministro, ejecución, entrega física
    */
   contractor: [
-    "Suministro de materiales e insumos según proyecto",
-    "Mano de obra calificada para ejecución de obra civil e instalaciones",
-    "Revisión técnica y control de calidad durante la obra",
-    "Limpieza y entrega final de la obra"
+    "Planeación de obra, logística y habilitación de frente de trabajo",
+    "Suministro de materiales certificados y gestión de proveedores",
+    "Ejecución de obra civil, albañilerías y estructura",
+    "Instalaciones eléctricas, hidráulicas y sistemas especiales",
+    "Supervisión de seguridad industrial y control de calidad",
+    "Acabados finos, herrería, carpintería y detalles de cierre",
+    "Puesta en marcha de sistemas y pruebas funcionales",
+    "Limpieza profunda, entrega final y documentación de garantía"
   ]
 };
 

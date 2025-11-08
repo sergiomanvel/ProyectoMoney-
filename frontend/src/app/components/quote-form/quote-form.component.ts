@@ -63,6 +63,26 @@ interface UserItem {
                 </span>
               </div>
             </div>
+
+            <div class="form-group md:col-span-2">
+              <label for="ownerId">Identificador interno (opcional)</label>
+              <input
+                type="text"
+                id="ownerId"
+                formControlName="ownerId"
+                placeholder="Ej: cuenta-acme"
+                class="form-control"
+                [class.error]="isFieldInvalid('ownerId')"
+              />
+              <div *ngIf="isFieldInvalid('ownerId')" class="error-message">
+                <span *ngIf="quoteForm.get('ownerId')?.errors?.['maxlength']">
+                  El identificador debe tener máximo 191 caracteres
+                </span>
+              </div>
+              <div class="text-sm text-gray-500 mt-1">
+                Este valor ayuda a reutilizar precios históricos del mismo cliente o cuenta.
+              </div>
+            </div>
           </div>
 
           <!-- Sector -->
@@ -84,6 +104,27 @@ interface UserItem {
             </select>
             <div *ngIf="isFieldInvalid('sector')" class="error-message">
               Selecciona el sector del servicio
+            </div>
+          </div>
+
+          <!-- Ubicación del proyecto -->
+          <div class="form-group">
+            <label for="projectLocation">Ubicación del proyecto (ciudad, país)</label>
+            <input
+              type="text"
+              id="projectLocation"
+              formControlName="projectLocation"
+              placeholder="Ej: Madrid, España"
+              class="form-control"
+              [class.error]="isFieldInvalid('projectLocation')"
+            />
+            <div *ngIf="isFieldInvalid('projectLocation')" class="error-message">
+              <span *ngIf="quoteForm.get('projectLocation')?.errors?.['maxlength']">
+                La ubicación debe tener máximo 120 caracteres
+              </span>
+            </div>
+            <div class="text-sm text-gray-500 mt-1">
+              Usa el formato "Ciudad, País" para mejorar los ajustes regionales.
             </div>
           </div>
 
@@ -418,9 +459,11 @@ export class QuoteFormComponent {
     this.quoteForm = this.fb.group({
       clientName: ['', [Validators.required, Validators.minLength(2)]],
       clientEmail: ['', [Validators.required, Validators.email]],
+      ownerId: ['', [Validators.maxLength(191)]],
       sector: ['', Validators.required],
       projectDescription: ['', [Validators.required, Validators.minLength(20)]],
-      priceRange: ['', Validators.required]
+      priceRange: ['', Validators.required],
+      projectLocation: ['', [Validators.maxLength(120)]]
     });
   }
 
@@ -459,9 +502,11 @@ export class QuoteFormComponent {
       const request: QuoteRequest = {
         clientName: formValue.clientName,
         clientEmail: formValue.clientEmail,
+        ownerId: formValue.ownerId?.trim() || undefined,
         projectDescription: formValue.projectDescription,
         priceRange: formValue.priceRange,
         sector: formValue.sector,
+        projectLocation: formValue.projectLocation?.trim() || undefined,
         items: this.defineItems && this.userItems.length > 0 
           ? this.userItems.map(item => ({
               description: item.description.trim(),
@@ -503,9 +548,11 @@ export class QuoteFormComponent {
     this.quoteForm.reset({
       clientName: '',
       clientEmail: '',
+      ownerId: '',
       sector: '',
       projectDescription: '',
-      priceRange: ''
+      priceRange: '',
+      projectLocation: ''
     });
     this.defineItems = false;
     this.userItems = [];

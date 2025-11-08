@@ -25,6 +25,10 @@ import { QuoteListComponent } from './components/quote-list/quote-list.component
                 <p class="text-sm text-blue-100 mt-1">Generador de Cotizaciones con IA</p>
               </div>
             </div>
+            <nav>
+              <a href="/billing/plans" class="text-white underline mr-4">Suscripción</a>
+              <a href="/billing/status" class="text-white underline">Estado</a>
+            </nav>
           </div>
         </div>
       </header>

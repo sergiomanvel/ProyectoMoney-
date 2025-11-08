@@ -9,6 +9,9 @@ export interface QuoteRequest {
   projectDescription: string;
   priceRange: string;
   sector?: string;
+  projectLocation?: string;
+  ownerId?: string;
+  qualityLevel?: 'basico' | 'estandar' | 'premium';
   items?: Array<{
     description: string;
     quantity: number;

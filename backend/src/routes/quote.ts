@@ -1,5 +1,6 @@
 import express from 'express';
 import { AIService } from '../services/aiService';
+import { requirePlan } from '../middleware/requirePlan';
 import { PDFGenerator } from '../utils/pdfGenerator';
 import { pool } from '../server';
 import { Quote, GeneratedQuote } from '../models/Quote';
@@ -9,8 +10,24 @@ import { getAppConfig } from '../utils/appConfig';
 import { generateNextFolio } from '../utils/folio';
 import { signQuoteToken, verifyQuoteToken } from '../utils/token';
 import { QuoteItemsService } from '../services/quoteItemsService';
+import { logQuoteEvent } from '../utils/learningLogger';
+import { QuoteHistoryService } from '../services/quoteHistoryService';
 
 const router = express.Router();
+
+const summarizeItems = (items: Array<{ total?: number; quantity?: number; unitPrice?: number }>) => {
+  const subtotal = items.reduce((sum, item) => {
+    if (typeof item.total === 'number') return sum + item.total;
+    if (typeof item.quantity === 'number' && typeof item.unitPrice === 'number') {
+      return sum + item.quantity * item.unitPrice;
+    }
+    return sum;
+  }, 0);
+  return {
+    count: items.length,
+    subtotal
+  };
+};
 
 // Configurar nodemailer con secure según puerto
 const smtpPort = parseInt(process.env.SMTP_PORT || '587');
@@ -104,7 +121,7 @@ router.get('/config', async (_req, res) => {
  * GET /api/openai/test
  * Verifica credenciales de OpenAI y devuelve diagnóstico
  */
-router.get('/openai/test', async (_req, res) => {
+router.get('/openai/test', requirePlan(), async (_req, res) => {
   try {
     const apiKey = process.env.OPENAI_API_KEY;
     
@@ -184,9 +201,9 @@ router.get('/openai/test', async (_req, res) => {
  * POST /api/generate-quote
  * Genera una nueva cotización con IA
  */
-router.post('/generate-quote', async (req, res) => {
+router.post('/generate-quote', requirePlan(), async (req, res) => {
   try {
-    const { clientName, clientEmail, projectDescription, priceRange, sector, items } = req.body;
+    const { clientName, clientEmail, projectDescription, priceRange, sector, projectLocation, items, qualityLevel } = req.body;
 
     // Validar datos requeridos
     if (!clientName || !clientEmail || !projectDescription || !priceRange) {
@@ -202,6 +219,28 @@ router.post('/generate-quote', async (req, res) => {
       return res.status(400).json({ error: 'Email inválido' });
     }
 
+    const headerOwnerCandidate = [
+      req.headers['x-user-id'],
+      req.headers['x-account-id'],
+      req.headers['x-organization-id'],
+      req.headers['x-user-email'],
+      req.headers['x-owner-id']
+    ].find(value => typeof value === 'string' && value.trim().length > 0) as string | undefined;
+    const bodyOwnerCandidate = typeof req.body?.ownerId === 'string' && req.body.ownerId.trim().length > 0
+      ? req.body.ownerId
+      : undefined;
+    const emailOwnerCandidate = typeof clientEmail === 'string' && clientEmail.trim().length > 0
+      ? clientEmail
+      : undefined;
+    const envOwnerCandidate = process.env.DEFAULT_OWNER_ID && process.env.DEFAULT_OWNER_ID.trim().length > 0
+      ? process.env.DEFAULT_OWNER_ID
+      : undefined;
+
+    const ownerIdRaw = [headerOwnerCandidate, bodyOwnerCandidate, emailOwnerCandidate, envOwnerCandidate].find(
+      (value): value is string => !!value && value.trim().length > 0
+    ) || 'anonymous';
+    const ownerId = ownerIdRaw.trim().toLowerCase();
+
     console.log('🤖 Generando cotización con IA...');
     
     // Generar cotización con IA Enterprise (puede retornar error si descripción inválida)
@@ -210,7 +249,10 @@ router.post('/generate-quote', async (req, res) => {
       clientName,
       priceRange,
       sector,
-      items
+      items,
+      qualityLevel || 'estandar',
+      projectLocation,
+      ownerId
     );
 
     // Verificar si la IA retornó error (validación previa)
@@ -261,6 +303,38 @@ router.post('/generate-quote', async (req, res) => {
     const filepath = await PDFGenerator.savePDFToFile(pdfBuffer, filename);
 
     console.log('✅ Cotización generada exitosamente');
+
+    logQuoteEvent({
+      type: 'quote_generated',
+      quoteId,
+      payload: {
+        ownerId,
+        sector: sector || generatedQuote.sector,
+        priceRange,
+        total: generatedQuote.total,
+        itemCount: generatedQuote.items?.length,
+        generatedBy: generatedQuote.meta?.generatedBy,
+      projectContext: generatedQuote.meta?.projectContext,
+      projectLocation: projectLocation || generatedQuote.meta?.projectContext?.locationHint,
+      locationMultiplier: generatedQuote.meta?.projectContext?.locationMultiplier,
+      fluctuationWarning: generatedQuote.fluctuationWarning
+      }
+    }).catch(() => {});
+
+    QuoteHistoryService.recordGeneration({
+      ownerId,
+      quoteId,
+      clientName,
+      clientEmail,
+      sector: sector || generatedQuote.sector,
+      priceRange,
+      qualityLevel: generatedQuote.meta?.qualityLevel,
+      projectDescription,
+      projectLocation: projectLocation || generatedQuote.meta?.projectContext?.locationHint,
+      generatedBy: generatedQuote.meta?.generatedBy,
+      generatedQuote,
+      projectContext: generatedQuote.meta?.projectContext
+    }).catch(error => console.error('Error guardando historial de cotizaciones:', error));
 
     res.json({
       success: true,
@@ -315,6 +389,13 @@ router.post('/quotes/:id/accept', async (req, res) => {
   try {
     const { id } = req.params;
     await pool.query(`UPDATE quotes SET status='accepted', accepted_at=NOW() WHERE id=$1`, [id]);
+    logQuoteEvent({
+      type: 'quote_accepted',
+      quoteId: parseInt(id),
+      payload: {
+        acceptedAt: new Date().toISOString()
+      }
+    }).catch(() => {});
     res.json({ success: true, message: 'Cotización marcada como aceptada' });
   } catch (error) {
     console.error('Error marcando como aceptada:', error);
@@ -591,6 +672,14 @@ router.post('/quotes/:id/items', async (req, res) => {
       unitPrice
     });
 
+  logQuoteEvent({
+    type: 'items_created',
+    quoteId: parseInt(id),
+    payload: {
+      summary: summarizeItems(items)
+    }
+  }).catch(() => {});
+
     res.json({
       success: true,
       items
@@ -615,6 +704,15 @@ router.put('/quotes/:id/items/:itemId', async (req, res) => {
 
     const items = await QuoteItemsService.updateItem(pool, parseInt(id), parseInt(itemId), updates);
 
+  logQuoteEvent({
+    type: 'items_updated',
+    quoteId: parseInt(id),
+    payload: {
+      itemId: parseInt(itemId),
+      summary: summarizeItems(items)
+    }
+  }).catch(() => {});
+
     res.json({
       success: true,
       items
@@ -636,6 +734,15 @@ router.delete('/quotes/:id/items/:itemId', async (req, res) => {
   try {
     const { id, itemId } = req.params;
     const items = await QuoteItemsService.deleteItem(pool, parseInt(id), parseInt(itemId));
+
+  logQuoteEvent({
+    type: 'items_deleted',
+    quoteId: parseInt(id),
+    payload: {
+      itemId: parseInt(itemId),
+      summary: summarizeItems(items)
+    }
+  }).catch(() => {});
 
     res.json({
       success: true,
@@ -696,6 +803,15 @@ router.post('/quotes/:id/recalculate', async (req, res) => {
     quote.generated_content = typeof quote.generated_content === 'string' 
       ? JSON.parse(quote.generated_content) 
       : quote.generated_content;
+
+    logQuoteEvent({
+      type: 'quote_recalculated',
+      quoteId: parseInt(id),
+      payload: {
+        totals,
+        summary: Array.isArray(quote.generated_content?.items) ? summarizeItems(quote.generated_content.items) : undefined
+      }
+    }).catch(() => {});
 
     res.json({
       success: true,

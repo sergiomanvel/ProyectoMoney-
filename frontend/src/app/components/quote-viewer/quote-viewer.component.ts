@@ -37,6 +37,30 @@ import { QuoteService, QuoteItem } from '../../services/quote.service';
             <p class="text-sm text-gray-700 leading-relaxed italic">{{ quote.summary }}</p>
           </div>
 
+          <!-- Información contextual -->
+          <div *ngIf="quote?.meta?.projectContext?.locationHint || quote?.fluctuationWarning || historicalPricing" class="mb-6 space-y-3">
+            <div *ngIf="quote?.meta?.projectContext?.locationHint" class="p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
+              <strong>Ubicación estimada:</strong>
+              {{ quote.meta.projectContext.locationHint }}
+              <span *ngIf="quote.meta.projectContext.locationMultiplier" class="block text-xs text-amber-700 mt-1">
+                Ajuste regional aplicado: x{{ quote.meta.projectContext.locationMultiplier | number:'1.2-2' }}
+              </span>
+            </div>
+            <div *ngIf="quote?.fluctuationWarning" class="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-800">
+              <strong>Aviso de fluctuación:</strong> {{ quote.fluctuationWarning }}
+            </div>
+            <div *ngIf="historicalPricing" class="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-sm text-emerald-800">
+              <strong>Referencia histórica:</strong>
+              Promedio {{ historicalPricing.average | currency:'MXN':'symbol':'1.0-0' }}
+              <span *ngIf="historicalPricing.low !== undefined && historicalPricing.high !== undefined">
+                (rango {{ historicalPricing.low | currency:'MXN':'symbol':'1.0-0' }} – {{ historicalPricing.high | currency:'MXN':'symbol':'1.0-0' }})
+              </span>
+              <span class="block text-xs text-emerald-700 mt-1" *ngIf="historicalPricing.count > 0">
+                Basado en {{ historicalPricing.count }} cotización{{ historicalPricing.count === 1 ? '' : 'es' }} previas del mismo cliente.
+              </span>
+            </div>
+          </div>
+
           <!-- Alerta si hay items editables -->
           <div *ngIf="hasEditedItems" class="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
             <p class="text-sm text-blue-800">
@@ -447,6 +471,7 @@ export class QuoteViewerComponent {
   isRecalculating = false;
   successMessage = '';
   errorMessage = '';
+  historicalPricing: { average: number; low?: number; high?: number; count: number } | null = null;
 
   // Items editables
   editedItems: QuoteItem[] = [];
@@ -472,6 +497,17 @@ export class QuoteViewerComponent {
       tax: this.quote.tax || 0,
       total: this.quote.total || 0
     };
+
+    const pricingMeta = this.quote?.meta?.historicalPricing;
+    if (pricingMeta && typeof pricingMeta.suggestedAverage === 'number') {
+      const count = Array.isArray(pricingMeta.similarQuoteIds) ? pricingMeta.similarQuoteIds.length : 0;
+      this.historicalPricing = {
+        average: pricingMeta.suggestedAverage,
+        low: pricingMeta.low,
+        high: pricingMeta.high,
+        count
+      };
+    }
 
     // Si hay quoteId, intentar cargar items editables
     if (this.quoteId) {

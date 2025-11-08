@@ -1,3 +1,5 @@
+import type { ProjectContext } from '../utils/contextAnalyzer';
+
 export interface Quote {
   id?: number;
   clientName: string;
@@ -34,8 +36,17 @@ export interface GeneratedQuote {
   estimatedDelivery?: string;
   deliverables?: string[];
   timeline?: string[];
+  fluctuationWarning?: string;
   meta?: {
     aestheticAdjusted?: boolean;
     generatedBy?: string;
+    projectContext?: ProjectContext;
+    qualityLevel?: 'basico' | 'estandar' | 'premium';
+    historicalPricing?: {
+      suggestedAverage?: number;
+      low?: number;
+      high?: number;
+      similarQuoteIds?: number[];
+    };
   };
 }
