@@ -42,11 +42,46 @@ export interface GeneratedQuote {
     generatedBy?: string;
     projectContext?: ProjectContext;
     qualityLevel?: 'basico' | 'estandar' | 'premium';
+    clientProfile?: 'autonomo' | 'pyme' | 'agencia' | 'startup' | 'enterprise';
+    projectType?: string;
+    region?: string;
     historicalPricing?: {
       suggestedAverage?: number;
       low?: number;
       high?: number;
       similarQuoteIds?: number[];
+    };
+    estimateDetail?: {
+      scale?: string;
+      baseTotal?: number;
+      appliedMultipliers?: {
+        inflation?: number;
+        marketLocation?: number;
+        location?: number;
+        urgency?: number;
+        timeline?: number;
+        clientProfile?: number;
+        projectType?: number;
+        region?: number;
+      };
+      blendedHistoricTotal?: number;
+      fallbackUsed?: boolean;
+      clientProfile?: string;
+      projectType?: string;
+      region?: string;
+    };
+    debug?: {
+      traceId?: string;
+      timings?: Record<string, number>;
+      flags?: Record<string, boolean>;
+      openAIModel?: string;
+      historySample?: number[];
+      distribution?: {
+        weights?: number[];
+        marginMultiplier?: number;
+        overheadMultiplier?: number;
+        minPerItem?: number;
+      };
     };
   };
 }

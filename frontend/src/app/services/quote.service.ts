@@ -12,6 +12,9 @@ export interface QuoteRequest {
   projectLocation?: string;
   ownerId?: string;
   qualityLevel?: 'basico' | 'estandar' | 'premium';
+  clientProfile?: string;
+  projectType?: string;
+  region?: string;
   items?: Array<{
     description: string;
     quantity: number;

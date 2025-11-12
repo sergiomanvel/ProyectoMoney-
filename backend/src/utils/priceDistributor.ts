@@ -15,6 +15,10 @@ export interface QuoteItem {
 export interface DistributionResult {
   items: QuoteItem[];
   aestheticAdjusted: boolean;
+  weights?: number[];
+  marginMultiplier?: number;
+  overheadMultiplier?: number;
+  minPerItem?: number;
 }
 
 const WEIGHT_PROFILES: Record<string, Record<string, number>> = {
@@ -130,7 +134,8 @@ function calculateItemWeight(
 function applyAestheticAdjustment(
   items: QuoteItem[],
   targetTotal: number,
-  taxPercent: number
+  taxPercent: number,
+  meta?: Partial<DistributionResult>
 ): DistributionResult {
   let adjusted = false;
   let subtotal = items.reduce((sum, item) => sum + item.total, 0);
@@ -159,7 +164,8 @@ function applyAestheticAdjustment(
 
   return {
     items,
-    aestheticAdjusted: adjusted
+    aestheticAdjusted: adjusted,
+    ...meta
   };
 }
 
@@ -174,6 +180,153 @@ function nudgeValue(value: number, index: number): number {
   return value;
 }
 
+/**
+ * Obtiene el margen según perfil de cliente y tipo de proyecto
+ */
+function getMarginByProfileAndType(
+  sector?: string,
+  clientProfile?: string,
+  projectType?: string,
+  baseMargin: number = 0.12
+): number {
+  // Márgenes por perfil de cliente (Software)
+  if (sector === 'software' && clientProfile) {
+    const marginMap: Record<string, number> = {
+      'autonomo': 0.10,
+      'pyme': 0.12,
+      'agencia': 0.13,
+      'startup': 0.11,
+      'enterprise': 0.15
+    };
+    if (marginMap[clientProfile]) {
+      return marginMap[clientProfile];
+    }
+  }
+
+  // Márgenes por tipo de obra (Construcción)
+  if (sector === 'construccion' && projectType) {
+    const marginMap: Record<string, number> = {
+      'residencial': 0.12,
+      'industrial': 0.15,
+      'comercial': 0.13,
+      'rehabilitacion': 0.10,
+      'reforma': 0.10
+    };
+    if (marginMap[projectType]) {
+      return marginMap[projectType];
+    }
+  }
+
+  // Márgenes por perfil de consultor (Consultoría)
+  if (sector === 'consultoria' && clientProfile) {
+    const marginMap: Record<string, number> = {
+      'junior': 0.10,
+      'senior': 0.15,
+      'partner': 0.20,
+      'big4': 0.25
+    };
+    // En consultoría, clientProfile puede ser el perfil del consultor
+    if (marginMap[clientProfile]) {
+      return marginMap[clientProfile];
+    }
+  }
+
+  return baseMargin;
+}
+
+/**
+ * Ajusta pesos según perfil de cliente y tipo de proyecto
+ */
+function adjustWeightsByProfileAndType(
+  weights: number[],
+  items: QuoteItem[],
+  sector?: string,
+  clientProfile?: string,
+  projectType?: string
+): number[] {
+  const adjustedWeights = [...weights];
+  const descs = items.map(item => item.description.toLowerCase());
+
+  // Software: Autónomo (más desarrollo, menos documentación)
+  if (sector === 'software' && clientProfile === 'autonomo') {
+    descs.forEach((desc, idx) => {
+      if (desc.includes('desarrollo') || desc.includes('backend') || desc.includes('frontend')) {
+        adjustedWeights[idx] = weights[idx] * 1.15;
+      } else if (desc.includes('documentacion') || desc.includes('documentación')) {
+        adjustedWeights[idx] = weights[idx] * 0.85;
+      }
+    });
+  }
+
+  // Software: Enterprise (más arquitectura y documentación)
+  if (sector === 'software' && clientProfile === 'enterprise') {
+    descs.forEach((desc, idx) => {
+      if (desc.includes('arquitectura') || desc.includes('arquitectura técnica')) {
+        adjustedWeights[idx] = weights[idx] * 1.20;
+      } else if (desc.includes('documentacion') || desc.includes('documentación')) {
+        adjustedWeights[idx] = weights[idx] * 1.15;
+      }
+    });
+  }
+
+  // Marketing: Branding (más creatividad y estrategia)
+  if (sector === 'marketing' && projectType === 'branding') {
+    descs.forEach((desc, idx) => {
+      if (desc.includes('estrategia') || desc.includes('auditoría de marca') || desc.includes('contenido')) {
+        adjustedWeights[idx] = weights[idx] * 1.15;
+      } else if (desc.includes('pauta') || desc.includes('analítica')) {
+        adjustedWeights[idx] = weights[idx] * 0.90;
+      }
+    });
+  }
+
+  // Marketing: Performance (más pauta y analítica)
+  if (sector === 'marketing' && projectType === 'performance') {
+    descs.forEach((desc, idx) => {
+      if (desc.includes('pauta') || desc.includes('analítica') || desc.includes('crm')) {
+        adjustedWeights[idx] = weights[idx] * 1.15;
+      } else if (desc.includes('estrategia') || desc.includes('auditoría de marca')) {
+        adjustedWeights[idx] = weights[idx] * 0.90;
+      }
+    });
+  }
+
+  // Consultoría: IT (más implementación y tecnología)
+  if (sector === 'consultoria' && projectType === 'it') {
+    descs.forEach((desc, idx) => {
+      if (desc.includes('implementación') || desc.includes('tecnología') || desc.includes('tecnologia')) {
+        adjustedWeights[idx] = weights[idx] * 1.15;
+      } else if (desc.includes('diagnóstico') || desc.includes('diagnostico')) {
+        adjustedWeights[idx] = weights[idx] * 0.95;
+      }
+    });
+  }
+
+  // Consultoría: Financiera (más análisis y reporting)
+  if (sector === 'consultoria' && projectType === 'financiera') {
+    descs.forEach((desc, idx) => {
+      if (desc.includes('análisis') || desc.includes('analisis') || desc.includes('kpi') || desc.includes('reporting')) {
+        adjustedWeights[idx] = weights[idx] * 1.15;
+      } else if (desc.includes('workshop') || desc.includes('capacitación')) {
+        adjustedWeights[idx] = weights[idx] * 0.90;
+      }
+    });
+  }
+
+  // Consultoría: Estratégica (más diagnóstico y plan)
+  if (sector === 'consultoria' && projectType === 'estrategica') {
+    descs.forEach((desc, idx) => {
+      if (desc.includes('diagnóstico') || desc.includes('diagnostico') || desc.includes('plan estratégico') || desc.includes('plan estrategico')) {
+        adjustedWeights[idx] = weights[idx] * 1.15;
+      } else if (desc.includes('implementación') || desc.includes('implementacion')) {
+        adjustedWeights[idx] = weights[idx] * 0.95;
+      }
+    });
+  }
+
+  return adjustedWeights;
+}
+
 export function distributeTotalsByWeight(
   items: QuoteItem[],
   targetTotal: number,
@@ -181,8 +334,10 @@ export function distributeTotalsByWeight(
   taxPercent: number = 16,
   archContext?: { isArchitecture: boolean; mode: "architect" | "contractor" },
   costInfo?: CostEstimateResult,
-  qualityMarginOffset: number = 0
+  qualityMarginOffset: number = 0,
+  traceId?: string
 ): DistributionResult {
+  const prefix = traceId ? `[quote:${traceId}]` : undefined;
   const profile =
     costInfo?.profile ||
     sectorCostProfiles[sector || 'general'] ||
@@ -190,7 +345,16 @@ export function distributeTotalsByWeight(
 
   const marginPercentRaw = parseFloat(process.env.DEFAULT_MARGIN_PERCENT || '0.12');
   const baseMargin = Number.isFinite(marginPercentRaw) ? marginPercentRaw : 0.12;
-  const marginPercent = Math.max(baseMargin + qualityMarginOffset, 0);
+  
+  // Obtener margen según perfil y tipo
+  const profileMargin = getMarginByProfileAndType(
+    sector,
+    costInfo?.clientProfile,
+    costInfo?.projectType,
+    baseMargin
+  );
+  
+  const marginPercent = Math.max(profileMargin + qualityMarginOffset, 0);
   const marginMultiplier = 1 + marginPercent;
 
   const overheadPercentRaw = parseFloat(process.env.DEFAULT_OVERHEAD_PERCENT || '0.05');
@@ -201,12 +365,35 @@ export function distributeTotalsByWeight(
   if (archContext?.isArchitecture && archContext.mode === 'architect') {
     const fixedWeights = [0.14, 0.16, 0.32, 0.18, 0.12, 0.08];
     weights = items.map((_, idx) => fixedWeights[idx] || 0.1);
+    if (prefix) {
+      console.debug(`${prefix} ⚙️ Pesos arquitectura aplicados`, { weights });
+    }
   } else {
     weights = items.map(item => calculateItemWeight(item.description, sector, archContext, profile));
+    
+    // Ajustar pesos según perfil de cliente y tipo de proyecto
+    weights = adjustWeightsByProfileAndType(
+      weights,
+      items,
+      sector,
+      costInfo?.clientProfile,
+      costInfo?.projectType
+    );
+    
+    if (prefix && (costInfo?.clientProfile || costInfo?.projectType)) {
+      console.debug(`${prefix} ⚙️ Pesos ajustados por perfil/tipo`, {
+        clientProfile: costInfo?.clientProfile,
+        projectType: costInfo?.projectType,
+        weights
+      });
+    }
   }
 
   let totalWeight = weights.reduce((sum, w) => sum + w, 0);
   if (!Number.isFinite(totalWeight) || totalWeight <= 0) {
+    if (prefix) {
+      console.warn(`${prefix} ⚠️ Pesos inválidos, usando neutros`, { weights });
+    }
     weights = items.map(() => 1);
     totalWeight = items.length;
   }
@@ -254,13 +441,29 @@ export function distributeTotalsByWeight(
   const formattedItems = distributedItems.map((item, index) => {
     const total = parseFloat(item.total.toFixed(2));
     const unitPrice = parseFloat(item.unitPrice.toFixed(2));
+    if (prefix && weights[index] === 0.1 && archContext?.isArchitecture && archContext.mode === 'architect') {
+      console.debug(`${prefix} ℹ️ Peso por defecto aplicado en posición ${index}`, { description: item.description });
+    }
     return {
       ...item,
       total,
       unitPrice
     };
   });
+  if (prefix) {
+    console.debug(`${prefix} 💰 Distribución completada`, {
+      targetTotal,
+      marginMultiplier: parseFloat(marginMultiplier.toFixed(4)),
+      overheadMultiplier: parseFloat(overheadMultiplier.toFixed(4)),
+      minPerItem: parseFloat(minPerItem.toFixed(2))
+    });
+  }
 
-  return applyAestheticAdjustment(formattedItems, targetTotal, taxPercent);
+  return applyAestheticAdjustment(formattedItems, targetTotal, taxPercent, {
+    weights,
+    marginMultiplier: parseFloat(marginMultiplier.toFixed(4)),
+    overheadMultiplier: parseFloat(overheadMultiplier.toFixed(4)),
+    minPerItem: parseFloat(minPerItem.toFixed(2))
+  });
 }
 

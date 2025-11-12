@@ -93,17 +93,147 @@ interface UserItem {
               formControlName="sector"
               class="form-control"
               [class.error]="isFieldInvalid('sector')"
+              (change)="onSectorChange()"
             >
               <option value="">Selecciona un sector</option>
               <option value="software">Software / Desarrollo</option>
               <option value="marketing">Marketing / Redes</option>
               <option value="construccion">Construcción / Servicios técnicos</option>
-              <option value="consultoria">Consultoría / Formación</option>
+              <option value="consultoria">Consultoría</option>
               <option value="ecommerce">Ecommerce / Retail</option>
-              <option value="general">General</option>
+              <option value="eventos">Eventos</option>
+              <option value="comercio">Comercio</option>
+              <option value="manufactura">Manufactura</option>
+              <option value="formacion">Formación</option>
             </select>
             <div *ngIf="isFieldInvalid('sector')" class="error-message">
               Selecciona el sector del servicio
+            </div>
+          </div>
+
+          <!-- Perfil de Cliente (solo para Software y Consultoría) -->
+          <div class="form-group" *ngIf="showClientProfile()">
+            <label for="clientProfile">Perfil de Cliente</label>
+            <select
+              id="clientProfile"
+              formControlName="clientProfile"
+              class="form-control"
+            >
+              <option value="">Selecciona un perfil (opcional)</option>
+              <ng-container *ngIf="quoteForm.get('sector')?.value === 'software'">
+                <option value="autonomo">Autónomo</option>
+                <option value="pyme">PYME</option>
+                <option value="agencia">Agencia</option>
+                <option value="startup">Startup</option>
+                <option value="enterprise">Enterprise</option>
+              </ng-container>
+              <ng-container *ngIf="quoteForm.get('sector')?.value === 'consultoria'">
+                <option value="junior">Junior</option>
+                <option value="senior">Senior</option>
+                <option value="partner">Partner</option>
+                <option value="big4">Big 4</option>
+              </ng-container>
+            </select>
+          </div>
+
+          <!-- Tipo de Proyecto (según sector) -->
+          <div class="form-group" *ngIf="showProjectType()">
+            <label for="projectType">Tipo de Proyecto</label>
+            <select
+              id="projectType"
+              formControlName="projectType"
+              class="form-control"
+            >
+              <option value="">Selecciona un tipo (opcional)</option>
+              <ng-container *ngIf="quoteForm.get('sector')?.value === 'marketing'">
+                <option value="branding">Branding</option>
+                <option value="performance">Performance</option>
+                <option value="mixto">Mixto</option>
+              </ng-container>
+              <ng-container *ngIf="quoteForm.get('sector')?.value === 'construccion'">
+                <option value="residencial">Residencial</option>
+                <option value="industrial">Industrial</option>
+                <option value="comercial">Comercial</option>
+                <option value="rehabilitacion">Rehabilitación</option>
+                <option value="reforma">Reforma</option>
+              </ng-container>
+              <ng-container *ngIf="quoteForm.get('sector')?.value === 'consultoria'">
+                <option value="it">IT</option>
+                <option value="financiera">Financiera</option>
+                <option value="estrategica">Estratégica</option>
+                <option value="rrhh">RRHH</option>
+                <option value="general">General</option>
+              </ng-container>
+              <ng-container *ngIf="quoteForm.get('sector')?.value === 'ecommerce'">
+                <option value="b2c">B2C</option>
+                <option value="b2b">B2B</option>
+                <option value="marketplace">Marketplace</option>
+                <option value="dropshipping">Dropshipping</option>
+                <option value="subscription">Subscription</option>
+              </ng-container>
+              <ng-container *ngIf="quoteForm.get('sector')?.value === 'eventos'">
+                <option value="corporate">Corporate</option>
+                <option value="social">Social</option>
+                <option value="cultural">Cultural</option>
+                <option value="deportivo">Deportivo</option>
+                <option value="virtual">Virtual</option>
+                <option value="hibrido">Híbrido</option>
+              </ng-container>
+              <ng-container *ngIf="quoteForm.get('sector')?.value === 'comercio'">
+                <option value="fisico">Físico</option>
+                <option value="omnicanal">Omnicanal</option>
+                <option value="franchising">Franchising</option>
+                <option value="popup">Pop-up</option>
+                <option value="concept">Concept Store</option>
+              </ng-container>
+              <ng-container *ngIf="quoteForm.get('sector')?.value === 'manufactura'">
+                <option value="discreta">Discreta</option>
+                <option value="continua">Continua</option>
+                <option value="porLotes">Por Lotes</option>
+                <option value="custom">Custom</option>
+                <option value="automotriz">Automotriz</option>
+                <option value="farmaceutica">Farmacéutica</option>
+              </ng-container>
+              <ng-container *ngIf="quoteForm.get('sector')?.value === 'formacion'">
+                <option value="presencial">Presencial</option>
+                <option value="online">Online</option>
+                <option value="blended">Blended</option>
+                <option value="eLearning">E-learning</option>
+                <option value="coaching">Coaching</option>
+                <option value="workshop">Workshop</option>
+              </ng-container>
+            </select>
+          </div>
+
+          <!-- Región (Comunidad Autónoma) -->
+          <div class="form-group" *ngIf="showRegion()">
+            <label for="region">Región (Comunidad Autónoma)</label>
+            <select
+              id="region"
+              formControlName="region"
+              class="form-control"
+            >
+              <option value="">Selecciona una región (opcional)</option>
+              <option value="madrid">Madrid</option>
+              <option value="cataluña">Cataluña</option>
+              <option value="baleares">Baleares</option>
+              <option value="país vasco">País Vasco</option>
+              <option value="canarias">Canarias</option>
+              <option value="andalucía">Andalucía</option>
+              <option value="valencia">Valencia</option>
+              <option value="murcia">Murcia</option>
+              <option value="castilla y león">Castilla y León</option>
+              <option value="galicia">Galicia</option>
+              <option value="asturias">Asturias</option>
+              <option value="cantabria">Cantabria</option>
+              <option value="aragón">Aragón</option>
+              <option value="extremadura">Extremadura</option>
+              <option value="castilla la mancha">Castilla-La Mancha</option>
+              <option value="la rioja">La Rioja</option>
+              <option value="navarra">Navarra</option>
+            </select>
+            <div class="text-sm text-gray-500 mt-1">
+              La región afecta los precios según el mercado local.
             </div>
           </div>
 
@@ -463,8 +593,36 @@ export class QuoteFormComponent {
       sector: ['', Validators.required],
       projectDescription: ['', [Validators.required, Validators.minLength(20)]],
       priceRange: ['', Validators.required],
-      projectLocation: ['', [Validators.maxLength(120)]]
+      projectLocation: ['', [Validators.maxLength(120)]],
+      clientProfile: [''],
+      projectType: [''],
+      region: ['']
     });
+  }
+
+  onSectorChange() {
+    // Limpiar campos condicionales cuando cambia el sector
+    this.quoteForm.patchValue({
+      clientProfile: '',
+      projectType: '',
+      region: ''
+    });
+  }
+
+  showClientProfile(): boolean {
+    const sector = this.quoteForm.get('sector')?.value;
+    return sector === 'software' || sector === 'consultoria';
+  }
+
+  showProjectType(): boolean {
+    const sector = this.quoteForm.get('sector')?.value;
+    return ['marketing', 'construccion', 'consultoria', 'ecommerce', 'eventos', 'comercio', 'manufactura', 'formacion'].includes(sector);
+  }
+
+  showRegion(): boolean {
+    // Mostrar selector de región para todos los sectores
+    const sector = this.quoteForm.get('sector')?.value;
+    return !!sector && sector !== '';
   }
 
   isFieldInvalid(fieldName: string): boolean {
@@ -507,6 +665,9 @@ export class QuoteFormComponent {
         priceRange: formValue.priceRange,
         sector: formValue.sector,
         projectLocation: formValue.projectLocation?.trim() || undefined,
+        clientProfile: formValue.clientProfile?.trim() || undefined,
+        projectType: formValue.projectType?.trim() || undefined,
+        region: formValue.region?.trim() || undefined,
         items: this.defineItems && this.userItems.length > 0 
           ? this.userItems.map(item => ({
               description: item.description.trim(),
@@ -552,7 +713,10 @@ export class QuoteFormComponent {
       sector: '',
       projectDescription: '',
       priceRange: '',
-      projectLocation: ''
+      projectLocation: '',
+      clientProfile: '',
+      projectType: '',
+      region: ''
     });
     this.defineItems = false;
     this.userItems = [];

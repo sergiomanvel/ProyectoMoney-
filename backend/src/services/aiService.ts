@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { performance } from 'node:perf_hooks';
 import { GeneratedQuote } from '../models/Quote';
 import dotenv from 'dotenv';
 import Ajv from 'ajv';
@@ -15,6 +16,7 @@ import dayjs from 'dayjs';
 import { estimateProjectCost, CostEstimateResult } from '../utils/costEstimator';
 import { analyzeProjectContext, ProjectContext } from '../utils/contextAnalyzer';
 import { QuoteHistoryService, PriceSuggestionResult } from './quoteHistoryService';
+import { randomUUID } from 'crypto';
 
 export type QualityLevel = 'basico' | 'estandar' | 'premium';
 
@@ -112,7 +114,10 @@ export class AIService {
         sector,
         priceRange,
         archContext,
-        context: projectContext
+        context: projectContext,
+        clientProfile: projectContext.clientProfile,
+        projectType: projectContext.projectType,
+        region: projectContext.region
       });
       const prompt = this.buildContextAwarePrompt(
         projectDescription,
@@ -122,10 +127,23 @@ export class AIService {
         archContext,
         projectContext,
         qualityConfig,
-        normalizedQuality
+        normalizedQuality,
+        [],
+        undefined,
+        projectContext.clientProfile,
+        projectContext.projectType,
+        projectContext.region
       );
       
       const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+      const temperature = 0.5;
+      const trace = randomUUID();
+      console.debug(`[quote:${trace}] 📨 Prompt generación base`, {
+        model,
+        temperature,
+        hasHistory: false,
+        qualityLevel: normalizedQuality
+      });
       const completion = await openai.chat.completions.create({
         model,
         messages: [
@@ -138,13 +156,19 @@ export class AIService {
             content: prompt
           }
         ],
-        temperature: 0.5, // Más conservador para respuestas profesionales
+        temperature, // Más conservador para respuestas profesionales
         max_tokens: 2000,
       });
 
       const response = completion.choices[0]?.message?.content;
       if (!response) {
         throw new Error('No se recibió respuesta de OpenAI');
+      }
+      if (completion.usage) {
+        console.debug(`[quote:${trace}] 📊 Uso generación base`, {
+          promptTokens: completion.usage.prompt_tokens,
+          completionTokens: completion.usage.completion_tokens
+        });
       }
 
       // Parsear JSON
@@ -267,6 +291,13 @@ export class AIService {
 
     } catch (error) {
       console.error('❌ Error generando cotización con IA:', error);
+      if (error instanceof Error && error.message === 'INVALID_PRICE_RANGE') {
+        return {
+          error: true,
+          type: 'INVALID_PRICE_RANGE',
+          message: 'El rango de precio proporcionado no es válido. Usa valores numéricos en miles, por ejemplo "5 - 12".'
+        };
+      }
       
       // Fallback: generar cotización básica
       return await this.generateFallbackQuote(projectDescription, clientName, priceRange, normalizedQuality, projectContext);
@@ -291,7 +322,7 @@ export class AIService {
     const forbiddenWords = [
       'caca', 'zurullo', 'pedo', 'mierda', 'puta', 'pene', 'verga',
       'jajaja', 'jaja', 'xd', 'lol', 'lmao', 'rofl', 'poop',
-      'broma', 'troll', 'prueba', 'test', 'testing', 'nose',
+      'broma', 'troll', 'test', 'testing', 'nose',
       'no sé', 'tonto', 'idiota', 'monkey', 'mono'
     ];
 
@@ -630,21 +661,117 @@ IMPORTANTE:
     }
   }
 
-  private static getProjectContextPrompt(context?: ProjectContext): string {
-    if (!context) return '';
+  private static getProjectContextPrompt(
+    context?: ProjectContext,
+    clientProfile?: string,
+    projectType?: string,
+    region?: string
+  ): string {
     const lines: string[] = [];
-    if (context.locationHint) {
+    
+    if (context?.locationHint) {
       lines.push(`- Ubicación estimada del proyecto: ${context.locationHint}`);
     }
-    if (context.scaleOverride) {
+    if (context?.scaleOverride) {
       lines.push(`- Escala estimada del proyecto: ${context.scaleOverride}`);
     }
-    if (context.timelineWeeks) {
+    if (context?.timelineWeeks) {
       lines.push(`- Plazo objetivo inferido: ${context.timelineWeeks} semanas`);
     }
-    if (context.urgencyMultiplier && context.urgencyMultiplier > 1) {
+    if (context?.urgencyMultiplier && context.urgencyMultiplier > 1) {
       lines.push(`- Urgencia detectada: ${context.urgencyReason || 'Alta prioridad'}`);
     }
+    
+    // Añadir perfil de cliente (si se proporciona)
+    if (clientProfile) {
+      const profileLabels: Record<string, string> = {
+        'autonomo': 'Autónomo',
+        'pyme': 'PYME',
+        'agencia': 'Agencia',
+        'startup': 'Startup',
+        'enterprise': 'Enterprise',
+        'junior': 'Consultor Junior',
+        'senior': 'Consultor Senior',
+        'partner': 'Partner',
+        'big4': 'Big 4'
+      };
+      const profileLabel = profileLabels[clientProfile] || clientProfile;
+      lines.push(`- Perfil de cliente: ${profileLabel}`);
+    }
+    
+    // Añadir tipo de proyecto (si se proporciona)
+    if (projectType) {
+      const typeLabels: Record<string, string> = {
+        'branding': 'Campaña de Branding',
+        'performance': 'Campaña de Performance',
+        'mixto': 'Campaña Mixta',
+        'residencial': 'Obra Residencial',
+        'industrial': 'Obra Industrial',
+        'comercial': 'Obra Comercial',
+        'rehabilitacion': 'Rehabilitación',
+        'reforma': 'Reforma',
+        'it': 'Consultoría IT',
+        'financiera': 'Consultoría Financiera',
+        'estrategica': 'Consultoría Estratégica',
+        'rrhh': 'Consultoría RRHH',
+        'b2c': 'Ecommerce B2C',
+        'b2b': 'Ecommerce B2B',
+        'marketplace': 'Marketplace',
+        'dropshipping': 'Dropshipping',
+        'subscription': 'Subscription',
+        'corporate': 'Evento Corporate',
+        'social': 'Evento Social',
+        'cultural': 'Evento Cultural',
+        'deportivo': 'Evento Deportivo',
+        'virtual': 'Evento Virtual',
+        'hibrido': 'Evento Híbrido',
+        'fisico': 'Comercio Físico',
+        'omnicanal': 'Comercio Omnicanal',
+        'franchising': 'Franchising',
+        'popup': 'Pop-up Store',
+        'concept': 'Concept Store',
+        'discreta': 'Manufactura Discreta',
+        'continua': 'Manufactura Continua',
+        'porLotes': 'Manufactura por Lotes',
+        'custom': 'Manufactura Custom',
+        'automotriz': 'Manufactura Automotriz',
+        'farmaceutica': 'Manufactura Farmacéutica',
+        'presencial': 'Formación Presencial',
+        'online': 'Formación Online',
+        'blended': 'Formación Blended',
+        'eLearning': 'E-learning',
+        'coaching': 'Coaching',
+        'workshop': 'Workshop'
+      };
+      const typeLabel = typeLabels[projectType] || projectType;
+      lines.push(`- Tipo de proyecto: ${typeLabel}`);
+    }
+    
+    // Añadir región (si se proporciona)
+    if (region) {
+      const regionLabels: Record<string, string> = {
+        'madrid': 'Madrid',
+        'cataluña': 'Cataluña',
+        'baleares': 'Baleares',
+        'país vasco': 'País Vasco',
+        'canarias': 'Canarias',
+        'andalucía': 'Andalucía',
+        'valencia': 'Valencia',
+        'murcia': 'Murcia',
+        'castilla y león': 'Castilla y León',
+        'galicia': 'Galicia',
+        'asturias': 'Asturias',
+        'cantabria': 'Cantabria',
+        'aragón': 'Aragón',
+        'extremadura': 'Extremadura',
+        'castilla la mancha': 'Castilla-La Mancha',
+        'la rioja': 'La Rioja',
+        'navarra': 'Navarra'
+      };
+      const regionLabel = regionLabels[region] || region;
+      lines.push(`- Región: ${regionLabel} (los precios están ajustados al mercado local)`);
+    }
+    
     if (lines.length === 0) return '';
     return `Contexto adicional del proyecto:\n${lines.join('\n')}\n`;
   }
@@ -748,14 +875,30 @@ IMPORTANTE:
     }
   }
 
-  private static blendHistoricTotal(baseTotal: number, suggestion?: PriceSuggestionResult): { total: number; note?: string } {
+  private static blendHistoricTotal(
+    baseTotal: number,
+    suggestion?: PriceSuggestionResult,
+    traceId?: string
+  ): { total: number; note?: string } {
+    const prefix = traceId ? `[quote:${traceId}]` : undefined;
     if (!suggestion || !suggestion.suggestedAverage || !Number.isFinite(suggestion.suggestedAverage)) {
+      if (prefix) {
+        console.debug(`${prefix} 🔢 Sin historial suficiente, se usa total base`, { baseTotal });
+      }
       return { total: baseTotal };
     }
 
     const suggested = suggestion.suggestedAverage;
     const blended = Math.round((baseTotal * 0.6) + (suggested * 0.4));
     const note = QuoteHistoryService.buildPricingNote(suggestion);
+    if (prefix) {
+      console.debug(`${prefix} 🔁 Blend histórico aplicado`, {
+        baseTotal,
+        historicAverage: suggested,
+        blendedTotal: blended,
+        similarQuoteIds: suggestion.similarQuotes.map(entry => entry.id)
+      });
+    }
     return {
       total: blended,
       note
@@ -789,11 +932,14 @@ IMPORTANTE:
     qualityConfig?: QualityConfig,
     qualityLevel: QualityLevel = 'estandar',
     historySnippets: string[] = [],
-    pricingNote?: string
+    pricingNote?: string,
+    clientProfile?: string,
+    projectType?: string,
+    region?: string
   ): string {
     const cfg = getAppConfig();
     const sectorVoice = this.getSectorVoice(sector, archContext);
-    const contextNotes = this.getProjectContextPrompt(projectContext);
+    const contextNotes = this.getProjectContextPrompt(projectContext, clientProfile, projectType, region);
     const qualityNotes = qualityConfig
       ? `NIVEL DE CALIDAD: ${qualityLevel.toUpperCase()}\n- Estilo esperado: ${qualityConfig.styleGuidance}`
       : '';
@@ -803,7 +949,7 @@ IMPORTANTE:
     const pricingSection = pricingNote ? `${pricingNote}\n` : '';
 
     // Contexto específico por sector
-    const sectorContext = this.getSectorContext(sector);
+    const sectorContext = this.getSectorContext(sector, clientProfile, projectType);
 
     return `
 Genera una cotización comercial PROFESIONAL y REALISTA.
@@ -875,44 +1021,96 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
   /**
    * Contexto específico por sector para el prompt
    */
-  private static getSectorContext(sector: string): string {
+  private static getSectorContext(sector: string, clientProfile?: string, projectType?: string): string {
+    let baseContext = '';
+    let profileContext = '';
+    let typeContext = '';
+
     switch (sector) {
       case 'software':
-        return `CONTEXTO: Sector de desarrollo de software y tecnología
+        baseContext = `CONTEXTO: Sector de desarrollo de software y tecnología
 ÍTEMS TÍPICOS: Análisis de requerimientos, Diseño UI/UX, Desarrollo frontend/backend, Base de datos, Testing y QA, Documentación técnica, Deploy y configuración, Soporte y mantenimiento`;
+        if (clientProfile === 'autonomo') {
+          profileContext = '\nNOTA: Cliente autónomo - priorizar desarrollo práctico y funcional, menos énfasis en documentación extensa.';
+        } else if (clientProfile === 'enterprise') {
+          profileContext = '\nNOTA: Cliente enterprise - incluir arquitectura robusta, documentación completa, y procesos de calidad.';
+        }
+        break;
 
       case 'marketing':
-        return `CONTEXTO: Sector de marketing digital y comunicación
+        baseContext = `CONTEXTO: Sector de marketing digital y comunicación
 ÍTEMS TÍPICOS: Auditoría de marca, Estrategia de contenidos, Producción creativa, Gestión de redes sociales, Campañas publicitarias, SEO/SEM, Analítica y reportes, Community management`;
+        if (projectType === 'branding') {
+          typeContext = '\nNOTA: Campaña de branding - priorizar creatividad, estrategia de marca, y contenido visual premium.';
+        } else if (projectType === 'performance') {
+          typeContext = '\nNOTA: Campaña de performance - priorizar pauta digital, optimización de conversiones, y analítica.';
+        }
+        break;
 
       case 'construccion':
-        return `CONTEXTO: Sector de construcción e instalaciones
+        baseContext = `CONTEXTO: Sector de construcción e instalaciones
 ÍTEMS TÍPICOS: Materiales y suministros, Mano de obra especializada, Maquinaria y herramientas, Desplazamiento y logística, Puesta en marcha, Certificaciones, Garantía y mantenimiento`;
+        if (projectType === 'residencial') {
+          typeContext = '\nNOTA: Obra residencial - enfoque en acabados, habitabilidad, y normativas residenciales.';
+        } else if (projectType === 'industrial') {
+          typeContext = '\nNOTA: Obra industrial - enfoque en estructura, instalaciones especializadas, y cumplimiento industrial.';
+        }
+        break;
 
       case 'eventos':
-        return `CONTEXTO: Sector de eventos y entretenimiento
+        baseContext = `CONTEXTO: Sector de eventos y entretenimiento
 ÍTEMS TÍPICOS: Planificación y coordinación, Montaje de escenarios, Sonido e iluminación, Catering, Personal de servicio, Equipamiento audiovisual, Seguridad, Limpieza post-evento`;
+        if (projectType === 'virtual') {
+          typeContext = '\nNOTA: Evento virtual - priorizar plataforma virtual, streaming, y tecnología de transmisión.';
+        } else if (projectType === 'hibrido') {
+          typeContext = '\nNOTA: Evento híbrido - incluir componentes físicos y virtuales, tecnología dual, y coordinación compleja.';
+        }
+        break;
 
       case 'consultoria':
-        return `CONTEXTO: Sector de consultoría y asesoría
+        baseContext = `CONTEXTO: Sector de consultoría y asesoría
 ÍTEMS TÍPICOS: Sesión de diagnóstico, Análisis de situación actual, Elaboración de plan de acción, Presentación de resultados, Seguimiento y acompañamiento, Capacitación a equipo`;
+        if (projectType === 'it') {
+          typeContext = '\nNOTA: Consultoría IT - priorizar análisis técnico, implementación, y tecnología.';
+        } else if (projectType === 'financiera') {
+          typeContext = '\nNOTA: Consultoría financiera - priorizar análisis financiero, reporting, y estrategia financiera.';
+        }
+        break;
 
       case 'comercio':
-        return `CONTEXTO: Sector comercial y retail
+        baseContext = `CONTEXTO: Sector comercial y retail
 ÍTEMS TÍPICOS: Diseño de vitrinas, Merchandising, Catálogo de productos, Asesoría de compras, Logística de distribución, Etiquetado y packaging, Servicio al cliente`;
+        if (projectType === 'omnicanal') {
+          typeContext = '\nNOTA: Comercio omnicanal - incluir integración de canales físico y online, sincronización de inventarios, y estrategia omnicanal.';
+        }
+        break;
 
       case 'manufactura':
-        return `CONTEXTO: Sector de manufactura y producción
+        baseContext = `CONTEXTO: Sector de manufactura y producción
 ÍTEMS TÍPICOS: Materiales raw, Proceso de fabricación, Control de calidad, Empaquetado, Envío y distribución, Certificaciones, Mantenimiento preventivo`;
+        if (projectType === 'automotriz') {
+          typeContext = '\nNOTA: Manufactura automotriz - priorizar cumplimiento IATF 16949, control estadístico de procesos, y calidad automotriz.';
+        } else if (projectType === 'farmaceutica') {
+          typeContext = '\nNOTA: Manufactura farmacéutica - priorizar cumplimiento GMP, trazabilidad, y calidad farmacéutica.';
+        }
+        break;
 
       case 'formacion':
-        return `CONTEXTO: Sector de formación y capacitación
+        baseContext = `CONTEXTO: Sector de formación y capacitación
 ÍTEMS TÍPICOS: Diseño de programa, Material educativo, Sesiones de capacitación, Evaluaciones, Certificaciones, Seguimiento post-capacitación, Materiales de apoyo`;
+        if (projectType === 'online') {
+          typeContext = '\nNOTA: Formación online - priorizar plataforma LMS, contenido multimedia, y diseño instruccional digital.';
+        } else if (projectType === 'coaching') {
+          typeContext = '\nNOTA: Coaching - priorizar sesiones personalizadas, acompañamiento individual, y desarrollo de habilidades.';
+        }
+        break;
 
       default:
-        return `CONTEXTO: Servicios generales
+        baseContext = `CONTEXTO: Servicios generales
 ÍTEMS: Usa palabras clave de la descripción para crear conceptos coherentes y profesionales.`;
     }
+
+    return baseContext + profileContext + typeContext;
   }
 
   /**
@@ -985,8 +1183,11 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
     existingContext?: ProjectContext,
     adjustedCostEstimate?: CostEstimateResult,
     _historySnippets: string[] = [],
-    _pricingNote?: string
+    _pricingNote?: string,
+    traceId?: string
   ): Promise<GeneratedQuote> {
+    const trace = traceId || randomUUID();
+    const prefix = `[quote:${trace}]`;
     // Clasificar sector localmente
     const sector = this.classifySectorLocal(projectDescription);
     
@@ -1015,11 +1216,22 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
     }
     const normalizedQuality = this.normalizeQualityLevel(qualityLevel);
     const qualityConfig = this.getQualityConfig(normalizedQuality);
+    const estimateStart = performance.now();
     const baseEstimate = estimateProjectCost({
       sector,
       priceRange,
       archContext: archContext.isArchitecture ? archContext : undefined,
-      context: projectContext
+      context: projectContext,
+      clientProfile: projectContext.clientProfile,
+      projectType: projectContext.projectType,
+      region: projectContext.region
+    });
+    const estimateDuration = performance.now() - estimateStart;
+    console.debug(`${prefix} 🧮 Estimación fallback`, {
+      scale: baseEstimate.scale,
+      baseTotal: baseEstimate.baseTotal,
+      appliedMultipliers: baseEstimate.appliedMultipliers,
+      duration: Number(estimateDuration.toFixed(2))
     });
     const costEstimate = adjustedCostEstimate
       ? { ...baseEstimate, ...adjustedCostEstimate }
@@ -1059,6 +1271,7 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
     }
     
     // Distribuir precios
+    const distributionStart = performance.now();
     const priceDistribution = distributeTotalsByWeight(
       contextualizedItems,
       basePrice,
@@ -1066,8 +1279,15 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
       cfg.defaultTaxPercent,
       archContext,
       costEstimate,
-      qualityConfig.marginOffset
+      qualityConfig.marginOffset,
+      trace
     );
+    const distributionDuration = performance.now() - distributionStart;
+    console.debug(`${prefix} 💸 Distribución fallback`, {
+      total: basePrice,
+      itemCount: priceDistribution.items.length,
+      duration: Number(distributionDuration.toFixed(2))
+    });
     
     // Título profesional
     const professionalTitle = buildQuoteTitle(projectDescription, sector, archContext);
@@ -1076,12 +1296,19 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
     const professionalTerms = buildQuoteTerms(sector, archContext);
     
     // Resumen comercial
-    const commercialSummary = await generateCommercialSummary(projectDescription, clientName, basePrice, undefined, archContext);
+    const commercialSummary = await generateCommercialSummary(
+      projectDescription,
+      clientName,
+      basePrice,
+      undefined,
+      archContext,
+      { traceId: trace, onFallback: () => { /* fallback already local */ } }
+    );
     
     // Timeline de plazos
     const timeline = buildQuoteTimeline(sector, archContext);
 
-    return {
+    const fallbackQuote: GeneratedQuote = {
       title: professionalTitle,
       clientName,
       projectDescription,
@@ -1102,6 +1329,47 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
         qualityLevel: normalizedQuality
       }
     };
+
+    const estimateDetail = {
+      scale: costEstimate.scale,
+      baseTotal: costEstimate.baseTotal,
+      appliedMultipliers: costEstimate.appliedMultipliers,
+      blendedHistoricTotal: costEstimate.targetTotal,
+      fallbackUsed: true,
+      clientProfile: projectContext.clientProfile,
+      projectType: projectContext.projectType,
+      region: projectContext.region
+    };
+
+    const distributionInfo = {
+      weights: priceDistribution.weights,
+      marginMultiplier: priceDistribution.marginMultiplier,
+      overheadMultiplier: priceDistribution.overheadMultiplier,
+      minPerItem: priceDistribution.minPerItem
+    };
+
+      fallbackQuote.meta = {
+        ...(fallbackQuote.meta ?? {}),
+        projectContext,
+        qualityLevel: normalizedQuality,
+        clientProfile: projectContext.clientProfile,
+        projectType: projectContext.projectType,
+        region: projectContext.region,
+        estimateDetail,
+        debug: {
+          traceId: trace,
+          timings: this.formatTimings({
+            estimateProjectCost: estimateDuration,
+            distributeTotalsByWeight: distributionDuration
+          }),
+          flags: { fallback: true, usedLocalItems: true, usedLocalSummary: true },
+          openAIModel: 'local-fallback',
+          historySample: [],
+          distribution: distributionInfo
+        }
+      };
+
+    return fallbackQuote;
   }
 
   /**
@@ -1129,15 +1397,34 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
     userItems?: Array<{ description: string; quantity: number; unitPrice: number }>,
     qualityLevel: string = 'estandar',
     projectLocation?: string,
-    ownerId?: string
+    ownerId?: string,
+    traceId?: string,
+    clientProfile?: 'autonomo' | 'pyme' | 'agencia' | 'startup' | 'enterprise',
+    projectType?: string,
+    region?: string
   ): Promise<GeneratedQuote | { error: true; type: string; message: string }> {
+    const internalTraceId = traceId || randomUUID();
+    const prefix = `[quote:${internalTraceId}]`;
+    const label = (phase: string) => `${prefix} ${phase}`;
+    console.log(`${prefix} ▶️ Inicio generateQuoteEnterprise`, {
+      clientName,
+      priceRange,
+      userSector,
+      projectLocation,
+      qualityLevel,
+      ownerId
+    });
+    console.time(label('generateQuoteEnterprise total'));
+    const historyTimings: Record<string, number> = {};
+
     // ==========================================
     // 🟣 ETAPA 1: INPUT VALIDATION
     // ==========================================
     const validation = this.validateDescriptionQuality(projectDescription);
     
     if (!validation.valid) {
-      console.log('⚠️ [Stage 1] Validación fallida:', validation.reason);
+      console.log(`${prefix} ⚠️ [Stage 1] Validación fallida:`, validation.reason);
+      console.timeEnd(label('generateQuoteEnterprise total'));
       return {
         error: true,
         type: 'INVALID_DESCRIPTION',
@@ -1149,6 +1436,16 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
     const sanitizedItems = userItems ? this.sanitizeUserItems(userItems) : [];
     const normalizedQuality = this.normalizeQualityLevel(qualityLevel);
     const projectContext = analyzeProjectContext(projectDescription, priceRange, projectLocation, userSector);
+    // Añadir clientProfile, projectType y region al contexto si se proporcionaron
+    if (clientProfile) {
+      projectContext.clientProfile = clientProfile;
+    }
+    if (projectType) {
+      projectContext.projectType = projectType;
+    }
+    if (region) {
+      projectContext.region = region;
+    }
 
     const resolvedOwnerId = (ownerId || 'anonymous').trim().toLowerCase();
     let historySnippets: string[] = [];
@@ -1156,12 +1453,14 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
     let pricingNote: string | undefined;
 
     try {
+      console.time(label('history.findRelevant.preOpenAI'));
       // Modo demo: saltar llamada a OpenAI y usar fallback seguro
       const isDemo = String(process.env.DEMO_MODE || '').toLowerCase() === 'true';
 
       if (isDemo) {
-        console.log('🤖 DEMO_MODE activo: usando generador local sin llamar a OpenAI');
-        const history = await QuoteHistoryService.findRelevantHistory(resolvedOwnerId, userSector, 5);
+        console.log(`${prefix} 🤖 DEMO_MODE activo: usando generador local sin llamar a OpenAI`);
+        const history = await QuoteHistoryService.findRelevantHistory(resolvedOwnerId, userSector, 5, internalTraceId);
+        console.timeEnd(label('history.findRelevant.preOpenAI'));
         historySnippets = QuoteHistoryService.buildPromptSnippets(history);
         priceSuggestion = await QuoteHistoryService.suggestPriceFromHistory(resolvedOwnerId, projectDescription, userSector);
         pricingNote = QuoteHistoryService.buildPricingNote(priceSuggestion);
@@ -1176,13 +1475,15 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
           historySnippets,
           priceSuggestion,
           pricingNote
+        , internalTraceId
         );
       }
 
       const apiKey = process.env.OPENAI_API_KEY;
       if (!apiKey) {
-        console.warn('⚠️ OPENAI_API_KEY ausente: generando con fallback local');
-        const history = await QuoteHistoryService.findRelevantHistory(resolvedOwnerId, userSector, 5);
+        console.warn(`${prefix} ⚠️ OPENAI_API_KEY ausente: generando con fallback local`);
+        const history = await QuoteHistoryService.findRelevantHistory(resolvedOwnerId, userSector, 5, internalTraceId);
+        console.timeEnd(label('history.findRelevant.preOpenAI'));
         historySnippets = QuoteHistoryService.buildPromptSnippets(history);
         priceSuggestion = await QuoteHistoryService.suggestPriceFromHistory(resolvedOwnerId, projectDescription, userSector);
         pricingNote = QuoteHistoryService.buildPricingNote(priceSuggestion);
@@ -1197,8 +1498,10 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
           historySnippets,
           priceSuggestion,
           pricingNote
+        , internalTraceId
         );
       }
+      console.timeEnd(label('history.findRelevant.preOpenAI'));
 
       // ==========================================
       // 🟣 ETAPA 2: DETERMINE SECTOR
@@ -1208,7 +1511,7 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
       if (userSector && userSector.trim().length > 0) {
         // Usuario proporcionó sector: usar directamente
         sector = userSector.trim().toLowerCase();
-        console.log('✅ Usando sector proporcionado por usuario:', sector);
+        console.log(`${prefix} ✅ Usando sector proporcionado por usuario:`, sector);
       } else {
         // Clasificar sector automáticamente
         const openai = new OpenAI({ apiKey });
@@ -1228,22 +1531,47 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
       // ==========================================
       // 🏗️ ETAPA 2.5: DETECT ARCHITECTURE MODE
       // ==========================================
-      const archContext = this.detectArchitectureContext(projectDescription, sector);
-      console.log(`🏗️ [Architecture Detection] isArchitecture: ${archContext.isArchitecture}, mode: ${archContext.mode}`);
+      console.time(label('detectArchitectureContext'));
+      let archContext;
+      try {
+        archContext = this.detectArchitectureContext(projectDescription, sector);
+        console.log(`${prefix} 🏗️ [Architecture Detection]`, archContext);
+      } catch (detErr) {
+        console.error(`${prefix} ❌ detectArchitectureContext error`, detErr);
+        throw detErr;
+      } finally {
+        console.timeEnd(label('detectArchitectureContext'));
+      }
 
       // ==========================================
       // 🟣 ETAPA 3: BUILD QUOTE
       // ==========================================
       let quote: GeneratedQuote;
 
-      const history = await QuoteHistoryService.findRelevantHistory(resolvedOwnerId, sector, 5);
+      const historyFindStart = performance.now();
+      console.time(label('history.findRelevant'));
+      const history = await QuoteHistoryService.findRelevantHistory(resolvedOwnerId, sector, 5, internalTraceId);
+      console.timeEnd(label('history.findRelevant'));
+      historyTimings.historyFindRelevant = performance.now() - historyFindStart;
+      const historySnippetStart = performance.now();
+      console.time(label('history.buildSnippets'));
       historySnippets = QuoteHistoryService.buildPromptSnippets(history);
+      console.timeEnd(label('history.buildSnippets'));
+      historyTimings.historyBuildSnippets = performance.now() - historySnippetStart;
+      const suggestStart = performance.now();
+      console.time(label('history.suggestPrice'));
       priceSuggestion = await QuoteHistoryService.suggestPriceFromHistory(resolvedOwnerId, projectDescription, sector);
+      console.timeEnd(label('history.suggestPrice'));
+      historyTimings.historySuggestPrice = performance.now() - suggestStart;
+      const pricingNoteStart = performance.now();
+      console.time(label('history.buildPricingNote'));
       pricingNote = QuoteHistoryService.buildPricingNote(priceSuggestion);
+      console.timeEnd(label('history.buildPricingNote'));
+      historyTimings.historyBuildPricingNote = performance.now() - pricingNoteStart;
 
       if (sanitizedItems && sanitizedItems.length > 0) {
         // 👤 USUARIO PROPORCIONÓ ITEMS → Usarlos como base
-        console.log('✅ Usuario proporcionó items, usando como fuente de verdad');
+        console.log(`${prefix} ✅ Usuario proporcionó items, usando como fuente de verdad`);
         quote = await this.generateFromUserItems(
           projectDescription, 
           clientName, 
@@ -1256,11 +1584,12 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
           projectContext,
           historySnippets,
           priceSuggestion,
-          pricingNote
+          pricingNote,
+          internalTraceId
         );
       } else {
         // 🤖 GENERAR COMPLETAMENTE CON IA
-        console.log('🤖 Usuario NO proporcionó items, generando completamente con IA');
+        console.log(`${prefix} 🤖 Usuario NO proporcionó items, generando completamente con IA`);
         quote = await this.generateFullQuoteWithAI(
           projectDescription,
           clientName,
@@ -1272,7 +1601,8 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
           projectContext,
           historySnippets,
           priceSuggestion,
-          pricingNote
+          pricingNote,
+          internalTraceId
         );
       }
 
@@ -1283,6 +1613,16 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
       quote.meta = {
         ...(quote.meta ?? {}),
         projectContext,
+        clientProfile: projectContext.clientProfile,
+        projectType: projectContext.projectType,
+        region: projectContext.region,
+        debug: {
+          ...(quote.meta?.debug ?? {}),
+          timings: {
+            ...(quote.meta?.debug?.timings ?? {}),
+            ...this.formatTimings(historyTimings)
+          }
+        },
         ...(priceSuggestion
           ? {
               historicalPricing: {
@@ -1295,14 +1635,29 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
           : {})
       };
 
+      console.timeEnd(label('generateQuoteEnterprise total'));
+      console.log(`${prefix} ✅ Cotización generada correctamente`);
       return quote;
 
-    } catch (error) {
-      console.error('❌ Error generando cotización:', error);
+    } catch (error: unknown) {
+      console.timeEnd(label('generateQuoteEnterprise total'));
+      const errMessage = error instanceof Error ? error.message : String(error);
+      console.error(`${prefix} ❌ Error generando cotización:`, errMessage);
+      if (error instanceof Error && error.stack) {
+        console.error(`${prefix} stacktrace:`, error.stack);
+      }
+      if (error instanceof Error && error.message === 'INVALID_PRICE_RANGE') {
+        console.warn(`${prefix} ⚠️ priceRange inválido`, { priceRange });
+        return {
+          error: true,
+          type: 'INVALID_PRICE_RANGE',
+          message: 'El rango de precio no es válido. Usa el formato "5000 - 12000" en miles de la divisa configurada.'
+        };
+      }
       
       // Fallback: generar cotización básica
       if (historySnippets.length === 0) {
-        const history = await QuoteHistoryService.findRelevantHistory(resolvedOwnerId, userSector, 5);
+        const history = await QuoteHistoryService.findRelevantHistory(resolvedOwnerId, userSector, 5, internalTraceId);
         historySnippets = QuoteHistoryService.buildPromptSnippets(history);
       }
       if (!priceSuggestion) {
@@ -1319,7 +1674,8 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
         projectContext,
         historySnippets,
         priceSuggestion,
-        pricingNote
+        pricingNote,
+        internalTraceId
       );
     }
   }
@@ -1359,21 +1715,66 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
     existingContext?: ProjectContext,
     historySnippets: string[] = [],
     priceSuggestion?: PriceSuggestionResult,
-    pricingNote?: string
+    pricingNote?: string,
+    traceId?: string
   ): Promise<GeneratedQuote> {
+    const trace = traceId || randomUUID();
+    const prefix = `[quote:${trace}]`;
+    const label = (phase: string) => `${prefix} ${phase}`;
+    const debugInfo: {
+      traceId: string;
+      openAIModel: string;
+      timings: Record<string, number>;
+      flags: Record<string, boolean>;
+      historySample: number[];
+      distribution?: {
+        weights?: number[];
+        marginMultiplier?: number;
+        overheadMultiplier?: number;
+        minPerItem?: number;
+      };
+    } = {
+      traceId: trace,
+      openAIModel: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+      timings: {},
+      flags: {},
+      historySample: priceSuggestion?.similarQuotes?.map(entry => entry.id) ?? []
+    };
     const openai = new OpenAI({ apiKey });
     const normalizedQuality = this.normalizeQualityLevel(qualityLevel);
     const qualityConfig = this.getQualityConfig(normalizedQuality);
+    const analyzeStart = performance.now();
+    console.time(label('analyzeProjectContext'));
     const projectContext = existingContext ?? analyzeProjectContext(projectDescription, priceRange, undefined, sector);
+    console.timeEnd(label('analyzeProjectContext'));
+    debugInfo.timings.analyzeProjectContext = performance.now() - analyzeStart;
+    const estimateStart = performance.now();
+    console.time(label('estimateProjectCost'));
     const costEstimate = estimateProjectCost({
       sector,
       priceRange,
       archContext,
-      context: projectContext
+      context: projectContext,
+      clientProfile: projectContext.clientProfile,
+      projectType: projectContext.projectType,
+      region: projectContext.region
     });
+    console.debug(`${prefix} 🧮 Estimación de costos (user items)`, {
+      scale: costEstimate.scale,
+      baseTotal: costEstimate.baseTotal,
+      appliedMultipliers: costEstimate.appliedMultipliers,
+      clientProfile: costEstimate.clientProfile,
+      projectType: costEstimate.projectType,
+      region: costEstimate.region
+    });
+    console.timeEnd(label('estimateProjectCost'));
+    debugInfo.timings.estimateProjectCost = performance.now() - estimateStart;
+    const blendStart = performance.now();
+    const blend = this.blendHistoricTotal(costEstimate.targetTotal, priceSuggestion, trace);
+    debugInfo.timings.blendHistoricTotal = performance.now() - blendStart;
     
     // Distribuir precios si faltan
-    let itemsWithPrices = this.distributePricesToUserItems(userItems, priceRange, sector, archContext);
+    let itemsWithPrices = this.distributePricesToUserItems(userItems, priceRange, sector, archContext, trace);
     
     // Sanitizar items en modo arquitecto (eliminar vocabulario de contratista)
     if (archContext?.isArchitecture && archContext.mode === "architect") {
@@ -1381,7 +1782,7 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
         itemsWithPrices.map(item => ({ ...item, total: item.quantity * item.unitPrice })),
         archContext.subtype
       ).map(item => ({ description: item.description, quantity: item.quantity, unitPrice: item.unitPrice }));
-      console.log('🏗️ Items del usuario sanitizados para modo arquitecto');
+      console.log(`${prefix} 🏗️ Items del usuario sanitizados para modo arquitecto`);
     }
     
     // Calcular totales
@@ -1393,6 +1794,44 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
 
     // Usar IA solo para enriquecer: título, términos, resumen
     const effectivePricingNote = pricingNote || QuoteHistoryService.buildPricingNote(priceSuggestion);
+    const itemsForDistribution = itemsWithPrices.map(item => ({
+      description: item.description,
+      quantity: item.quantity,
+      unitPrice: item.unitPrice,
+      total: item.quantity * item.unitPrice
+    }));
+    const distributionStart = performance.now();
+    const priceDistribution = distributeTotalsByWeight(
+      itemsForDistribution,
+      total,
+      sector,
+      cfg.defaultTaxPercent,
+      archContext,
+      costEstimate,
+      qualityConfig.marginOffset,
+      trace
+    );
+    debugInfo.timings.distributeTotalsByWeight = performance.now() - distributionStart;
+    console.debug(`${prefix} 💸 Distribución user items`, {
+      total,
+      itemCount: priceDistribution.items.length,
+      qualityMultiplier: qualityConfig.priceMultiplier
+    });
+    debugInfo.distribution = {
+      weights: priceDistribution.weights,
+      marginMultiplier: priceDistribution.marginMultiplier,
+      overheadMultiplier: priceDistribution.overheadMultiplier,
+      minPerItem: priceDistribution.minPerItem
+    };
+    const professionalTitle = buildQuoteTitle(projectDescription, sector, archContext);
+    const professionalTerms = buildQuoteTerms(sector, archContext);
+    const timeline = buildQuoteTimeline(sector, archContext);
+
+    let generatedQuote: GeneratedQuote | null = null;
+    let generatedBy: 'user-items' | 'user-items-fallback' = 'user-items';
+    let validUntil = dayjs().add(30, 'day').format('YYYY-MM-DD');
+    let commercialSummary: string;
+    const summaryStart = performance.now();
 
     try {
       const prompt = this.buildEnrichmentPrompt(
@@ -1404,11 +1843,16 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
         projectContext,
         qualityConfig,
         historySnippets,
-        effectivePricingNote
+        effectivePricingNote,
+        projectContext?.clientProfile,
+        projectContext?.projectType,
+        projectContext?.region
       );
+      console.debug(`${prefix} 📝 Prompt enriquecimiento user-items`, { model: debugInfo.openAIModel, items: itemsWithPrices.length });
       
+      const completionStart = performance.now();
       const completion = await openai.chat.completions.create({
-        model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+        model: debugInfo.openAIModel,
         messages: [
           {
             role: "system",
@@ -1422,51 +1866,29 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
         temperature: 0.5,
         max_tokens: 800,
       });
+      debugInfo.timings.enrichUserItems = performance.now() - completionStart;
 
       const response = completion.choices[0]?.message?.content;
       if (response) {
         const enriched = JSON.parse(response);
-        
-        // 🎨 MEJORAS: Aplicar refinamiento profesional (solo precios, título, términos, resumen)
-        console.log('🎨 [User Items] Aplicando refinamientos profesionales...');
-        
-        // 1. Distribuir precios de forma realista (sin refinar descripciones del usuario)
-        const itemsForDistribution = itemsWithPrices.map(item => ({
-          description: item.description,
-          quantity: item.quantity,
-          unitPrice: item.unitPrice,
-          total: item.quantity * item.unitPrice
-        }));
-        
-        const priceDistribution = distributeTotalsByWeight(
-          itemsForDistribution,
-          total,
-          sector,
-          cfg.defaultTaxPercent,
-          archContext,
-          costEstimate,
-          qualityConfig.marginOffset
-        );
-        
-        // 2. Construir título profesional
-        const professionalTitle = buildQuoteTitle(projectDescription, sector, archContext);
-        
-        // 3. Construir términos profesionales
-        const professionalTerms = buildQuoteTerms(sector, archContext);
-        
-        // 4. Generar resumen comercial
-        const commercialSummary = await generateCommercialSummary(
+        console.log(`${prefix} 🎨 [User Items] Refinamiento profesional completado`);
+        if (completion.usage) {
+          console.debug(`${prefix} 📊 Uso enriquecimiento user-items`, {
+            promptTokens: completion.usage.prompt_tokens,
+            completionTokens: completion.usage.completion_tokens
+          });
+        }
+        validUntil = enriched.validUntil || validUntil;
+        commercialSummary = await generateCommercialSummary(
           projectDescription,
           clientName,
           total,
           openai,
-          archContext
+          archContext,
+          { traceId: trace, onFallback: () => { debugInfo.flags.usedLocalSummary = true; debugInfo.flags.usedFallback = true; } }
         );
-        
-        // 5. Timeline de plazos
-        const timeline = buildQuoteTimeline(sector, archContext);
-        
-        return {
+        debugInfo.timings.generateCommercialSummary = performance.now() - summaryStart;
+        generatedQuote = {
           title: professionalTitle,
           clientName,
           projectDescription,
@@ -1474,11 +1896,11 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
           subtotal: priceDistribution.items.reduce((sum, item) => sum + item.total, 0),
           tax: priceDistribution.items.reduce((sum, item) => sum + item.total, 0) * taxPercent,
           total: priceDistribution.items.reduce((sum, item) => sum + item.total, 0) * (1 + taxPercent),
-          validUntil: enriched.validUntil || dayjs().add(30, 'day').format('YYYY-MM-DD'),
+          validUntil,
           terms: professionalTerms,
           summary: commercialSummary,
-          sector: sector,
-          timeline: timeline,
+          sector,
+          timeline,
           fluctuationWarning: projectContext.fluctuationWarning,
           meta: {
             aestheticAdjusted: priceDistribution.aestheticAdjusted,
@@ -1489,55 +1911,96 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
         };
       }
     } catch (error) {
-      console.error('Error enriqueciendo con IA, usando valores por defecto:', error);
+      debugInfo.flags.usedFallback = true;
+      const errMessage = error instanceof Error ? error.message : String(error);
+      console.error(`${prefix} Error enriqueciendo con IA, usando valores por defecto:`, errMessage);
+      if (error instanceof Error && error.stack) {
+        console.error(`${prefix} stacktrace:`, error.stack);
+      }
+    }
+    if (!generatedQuote) {
+      debugInfo.flags.usedLocalSummary = true;
+      generatedBy = 'user-items-fallback';
+      commercialSummary = await generateCommercialSummary(
+        projectDescription,
+        clientName,
+        total,
+        undefined,
+        archContext,
+        { traceId: trace, onFallback: () => { debugInfo.flags.usedLocalSummary = true; debugInfo.flags.usedFallback = true; } }
+      );
+      debugInfo.timings.generateCommercialSummary = performance.now() - summaryStart;
+      generatedQuote = {
+        title: professionalTitle,
+        clientName,
+        projectDescription,
+        items: priceDistribution.items,
+        subtotal: priceDistribution.items.reduce((sum, item) => sum + item.total, 0),
+        tax: priceDistribution.items.reduce((sum, item) => sum + item.total, 0) * taxPercent,
+        total: priceDistribution.items.reduce((sum, item) => sum + item.total, 0) * (1 + taxPercent),
+        validUntil,
+        terms: professionalTerms,
+        summary: commercialSummary,
+        sector,
+        timeline,
+        fluctuationWarning: projectContext.fluctuationWarning,
+        meta: {
+          aestheticAdjusted: priceDistribution.aestheticAdjusted,
+          generatedBy,
+          projectContext,
+          qualityLevel: normalizedQuality
+        }
+      };
     }
 
-    // 🎨 MEJORAS: Aplicar también en fallback
-    console.log('🎨 [User Items Fallback] Aplicando refinamientos profesionales...');
-    
-    const itemsForDistribution = itemsWithPrices.map(item => ({
-      description: item.description,
-      quantity: item.quantity,
-      unitPrice: item.unitPrice,
-      total: item.quantity * item.unitPrice
-    }));
-    
-    const priceDistribution = distributeTotalsByWeight(
-      itemsForDistribution,
-      total,
-      sector,
-      cfg.defaultTaxPercent,
-      archContext,
-      costEstimate,
-      qualityConfig.marginOffset
+    const fallbackUsed = Boolean(
+      debugInfo.flags.usedLocalItems ||
+      debugInfo.flags.usedLocalSummary ||
+      debugInfo.flags.usedFallback
     );
-    
-    const professionalTitle = buildQuoteTitle(projectDescription, sector, archContext);
-    const professionalTerms = buildQuoteTerms(sector, archContext);
-    const commercialSummary = await generateCommercialSummary(projectDescription, clientName, total, undefined, archContext);
-    const timeline = buildQuoteTimeline(sector, archContext);
 
-    return {
-      title: professionalTitle,
-      clientName,
-      projectDescription,
-      items: priceDistribution.items,
-      subtotal: priceDistribution.items.reduce((sum, item) => sum + item.total, 0),
-      tax: priceDistribution.items.reduce((sum, item) => sum + item.total, 0) * taxPercent,
-      total: priceDistribution.items.reduce((sum, item) => sum + item.total, 0) * (1 + taxPercent),
-      validUntil: dayjs().add(30, 'day').format('YYYY-MM-DD'),
-      terms: professionalTerms,
-      summary: commercialSummary,
-      sector: sector,
-      timeline: timeline,
-      fluctuationWarning: projectContext.fluctuationWarning,
-      meta: {
-        aestheticAdjusted: priceDistribution.aestheticAdjusted,
-        generatedBy: 'user-items-fallback',
-        projectContext,
-        qualityLevel: normalizedQuality
-      }
+    const estimateDetail = {
+      scale: costEstimate.scale,
+      baseTotal: costEstimate.baseTotal,
+      appliedMultipliers: costEstimate.appliedMultipliers,
+      blendedHistoricTotal: blend.total,
+      fallbackUsed,
+      clientProfile: projectContext.clientProfile,
+      projectType: projectContext.projectType,
+      region: projectContext.region
     };
+
+    const debugMeta = {
+      traceId: trace,
+      timings: this.formatTimings(debugInfo.timings),
+      flags: debugInfo.flags,
+      openAIModel: debugInfo.openAIModel,
+      historySample: debugInfo.historySample,
+      distribution: debugInfo.distribution
+    };
+
+    const historicalMeta = priceSuggestion
+      ? {
+          suggestedAverage: priceSuggestion.suggestedAverage,
+          low: priceSuggestion.low,
+          high: priceSuggestion.high,
+          similarQuoteIds: priceSuggestion.similarQuotes.map(entry => entry.id)
+        }
+      : undefined;
+
+    generatedQuote.meta = {
+      ...(generatedQuote.meta ?? {}),
+      projectContext,
+      qualityLevel: normalizedQuality,
+      clientProfile: projectContext.clientProfile,
+      projectType: projectContext.projectType,
+      region: projectContext.region,
+      estimateDetail,
+      debug: debugMeta,
+      ...(historicalMeta ? { historicalPricing: historicalMeta } : {})
+    };
+
+    return generatedQuote;
   }
 
   /**
@@ -1554,20 +2017,66 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
     existingContext?: ProjectContext,
     historySnippets: string[] = [],
     priceSuggestion?: PriceSuggestionResult,
-    pricingNote?: string
+    pricingNote?: string,
+    traceId?: string
   ): Promise<GeneratedQuote> {
+    const trace = traceId || randomUUID();
+    const prefix = `[quote:${trace}]`;
+    const label = (phase: string) => `${prefix} ${phase}`;
+    const debugInfo: {
+      traceId: string;
+      openAIModel: string;
+      timings: Record<string, number>;
+      flags: Record<string, boolean>;
+      historySample: number[];
+      distribution?: {
+        weights?: number[];
+        marginMultiplier?: number;
+        overheadMultiplier?: number;
+        minPerItem?: number;
+      };
+    } = {
+      traceId: trace,
+      openAIModel: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+      timings: {},
+      flags: {},
+      historySample: []
+    };
     const openai = new OpenAI({ apiKey });
     const config = getAppConfig();
+    const analyzeStart = performance.now();
+    console.time(label('analyzeProjectContext'));
     const projectContext = existingContext ?? analyzeProjectContext(projectDescription, priceRange, undefined, sector);
+    console.timeEnd(label('analyzeProjectContext'));
+    debugInfo.timings.analyzeProjectContext = performance.now() - analyzeStart;
     const normalizedQuality = this.normalizeQualityLevel(qualityLevel);
     const qualityConfig = this.getQualityConfig(normalizedQuality);
+    const estimateStart = performance.now();
+    console.time(label('estimateProjectCost'));
     const costEstimate = estimateProjectCost({
       sector,
       priceRange,
       archContext,
-      context: projectContext
+      context: projectContext,
+      clientProfile: projectContext.clientProfile,
+      projectType: projectContext.projectType,
+      region: projectContext.region
     });
-    const blend = this.blendHistoricTotal(costEstimate.targetTotal, priceSuggestion);
+    console.timeEnd(label('estimateProjectCost'));
+    debugInfo.timings.estimateProjectCost = performance.now() - estimateStart;
+    console.debug(`${prefix} 🧮 Estimación de costos`, {
+      scale: costEstimate.scale,
+      baseTotal: costEstimate.baseTotal,
+      appliedMultipliers: costEstimate.appliedMultipliers,
+      clientProfile: costEstimate.clientProfile,
+      projectType: costEstimate.projectType,
+      region: costEstimate.region
+    });
+    const blendStart = performance.now();
+    console.time(label('blendHistoricTotal'));
+    const blend = this.blendHistoricTotal(costEstimate.targetTotal, priceSuggestion, trace);
+    console.timeEnd(label('blendHistoricTotal'));
+    debugInfo.timings.blendHistoricTotal = performance.now() - blendStart;
     const targetTotal = blend.total;
     const effectivePricingNote = pricingNote || blend.note;
     const adjustedCostEstimate = {
@@ -1576,59 +2085,68 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
     };
     
     // 🎯 NUEVO PIPELINE: Usar templates base y contextualizar
-    console.log(`🏭 [Template-Based] Usando plantillas del sector: ${sector}`);
+    console.log(`${prefix} 🏭 [Template-Based] Usando plantillas del sector: ${sector}`);
     
     // 1. Obtener template base del sector (o arquitectura si aplica)
     let baseConcepts: string[];
     if (archContext?.isArchitecture && archContext.mode === "architect") {
       baseConcepts = ARCHITECTURE_TEMPLATES.architect;
-      console.log(`🏗️ Usando plantillas de arquitectura (modo: arquitecto)`);
+      console.log(`${prefix} 🏗️ Usando plantillas de arquitectura (modo: arquitecto)`);
     } else if (archContext?.isArchitecture && archContext.mode === "contractor") {
       baseConcepts = ARCHITECTURE_TEMPLATES.contractor;
-      console.log(`🏗️ Usando plantillas de arquitectura (modo: contratista)`);
+      console.log(`${prefix} 🏗️ Usando plantillas de arquitectura (modo: contratista)`);
     } else {
       baseConcepts = sectorTemplates[sector] || sectorTemplates['general'];
-      console.log(`📋 Template base tiene ${baseConcepts.length} conceptos`);
+      console.log(`${prefix} 📋 Template base tiene ${baseConcepts.length} conceptos`);
     }
     baseConcepts = this.adjustConceptsForQuality(baseConcepts, qualityConfig);
     
     // 2. Intentar contextualizar con OpenAI
-    let contextualizedItems: Array<{ description: string; quantity: number; unitPrice: number; total: number }>;
-    
-    try {
-      contextualizedItems = await this.contextualizeItemsWithOpenAI(
-        openai,
-        projectDescription,
-        sector,
-        baseConcepts,
-        archContext,
-        qualityConfig,
-        historySnippets,
-        effectivePricingNote
-      );
-      console.log('✅ Items contextualizados con OpenAI');
-    } catch (error) {
-      console.warn('⚠️ OpenAI falló en contextualización, usando reescritura local');
-      contextualizedItems = await this.contextualizeItemsLocal(
-        projectDescription,
-        sector,
-        baseConcepts,
-        archContext
-      );
-      console.log('✅ Items contextualizados localmente');
+    const contextualizeLabel = label('contextualizeItemsWithOpenAI');
+    console.time(contextualizeLabel);
+    const contextualizeStart = performance.now();
+    let contextualizedItems = await this.contextualizeItemsWithOpenAI(
+      openai,
+      projectDescription,
+      sector,
+      baseConcepts,
+      archContext,
+      qualityConfig,
+      historySnippets,
+      effectivePricingNote,
+      {
+        traceId: trace,
+        model: debugInfo.openAIModel,
+        onFallback: () => {
+          debugInfo.flags.usedLocalItems = true;
+          debugInfo.flags.usedFallback = true;
+        }
+      },
+      projectContext,
+      projectContext?.clientProfile,
+      projectContext?.projectType,
+      projectContext?.region
+    );
+    console.timeEnd(contextualizeLabel);
+    debugInfo.timings.contextualizeItemsWithOpenAI = performance.now() - contextualizeStart;
+    if (!debugInfo.flags.usedLocalItems) {
+      console.log(`${prefix} ✅ Items contextualizados con OpenAI`);
     }
     
     // 2.5. Sanitizar items en modo arquitecto (eliminar vocabulario de contratista)
     if (archContext?.isArchitecture && archContext.mode === "architect") {
       contextualizedItems = sanitizeArchitectureItems(contextualizedItems, archContext.subtype);
-      console.log('🏗️ Items sanitizados para modo arquitecto');
+      console.log(`${prefix} 🏗️ Items sanitizados para modo arquitecto`);
     }
     
     // 3. Calcular precios
+    const pricingStart = performance.now();
+    console.time(label('calculatePricing'));
     const basePrice = Math.round(targetTotal * qualityConfig.priceMultiplier);
     const taxPercent = config.defaultTaxPercent / 100;
     
     // 4. Distribuir precios (con pesos especiales para arquitectura)
+    const distributionStart = performance.now();
     const priceDistribution = distributeTotalsByWeight(
       contextualizedItems,
       basePrice,
@@ -1636,22 +2154,54 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
       config.defaultTaxPercent,
       archContext,
       adjustedCostEstimate,
-      qualityConfig.marginOffset
+      qualityConfig.marginOffset,
+      trace
     );
+    console.timeEnd(label('calculatePricing'));
+    debugInfo.timings.calculatePricing = performance.now() - pricingStart;
+    debugInfo.timings.distributeTotalsByWeight = performance.now() - distributionStart;
+    console.debug(`${prefix} 💸 Base price calculado`, {
+      basePrice,
+      qualityMultiplier: qualityConfig.priceMultiplier,
+      itemCount: priceDistribution.items.length
+    });
+    debugInfo.distribution = {
+      weights: priceDistribution.weights,
+      marginMultiplier: priceDistribution.marginMultiplier,
+      overheadMultiplier: priceDistribution.overheadMultiplier,
+      minPerItem: priceDistribution.minPerItem
+    };
     
     // 5. Generar metadatos profesionales
+    const titleStart = performance.now();
+    console.time(label('buildQuoteTitle'));
     const professionalTitle = buildQuoteTitle(projectDescription, sector, archContext);
+    console.timeEnd(label('buildQuoteTitle'));
+    debugInfo.timings.buildQuoteTitle = performance.now() - titleStart;
+    const termsStart = performance.now();
+    console.time(label('buildQuoteTerms'));
     const professionalTerms = buildQuoteTerms(sector, archContext);
+    console.timeEnd(label('buildQuoteTerms'));
+    debugInfo.timings.buildQuoteTerms = performance.now() - termsStart;
+    const summaryLabel = label('generateCommercialSummary');
+    console.time(summaryLabel);
+    const summaryStart = performance.now();
     const commercialSummary = await generateCommercialSummary(
       projectDescription,
       clientName,
       basePrice,
       openai,
-      archContext
+      archContext,
+      { traceId: trace, onFallback: () => { debugInfo.flags.usedLocalSummary = true; debugInfo.flags.usedFallback = true; } }
     );
+    console.timeEnd(summaryLabel);
+    debugInfo.timings.generateCommercialSummary = performance.now() - summaryStart;
+    if (priceSuggestion?.similarQuotes?.length) {
+      debugInfo.historySample = priceSuggestion.similarQuotes.map(entry => entry.id);
+    }
     const timeline = buildQuoteTimeline(sector, archContext);
     
-    return {
+    const generatedQuote: GeneratedQuote = {
       title: professionalTitle,
       clientName,
       projectDescription,
@@ -1663,7 +2213,7 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
       terms: professionalTerms,
       summary: commercialSummary,
       sector: sector,
-      timeline: timeline,
+      timeline,
       fluctuationWarning: projectContext.fluctuationWarning,
       meta: {
         aestheticAdjusted: priceDistribution.aestheticAdjusted,
@@ -1672,6 +2222,55 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
         qualityLevel: normalizedQuality
       }
     };
+
+    const fallbackUsed = Boolean(
+      debugInfo.flags.usedLocalItems ||
+      debugInfo.flags.usedLocalSummary ||
+      debugInfo.flags.usedFallback
+    );
+
+    const estimateDetail = {
+      scale: costEstimate.scale,
+      baseTotal: costEstimate.baseTotal,
+      appliedMultipliers: costEstimate.appliedMultipliers,
+      blendedHistoricTotal: blend.total,
+      fallbackUsed,
+      clientProfile: projectContext.clientProfile,
+      projectType: projectContext.projectType,
+      region: projectContext.region
+    };
+
+    const debugMeta = {
+      traceId: trace,
+      timings: this.formatTimings(debugInfo.timings),
+      flags: debugInfo.flags,
+      openAIModel: debugInfo.openAIModel,
+      historySample: debugInfo.historySample,
+      distribution: debugInfo.distribution
+    };
+
+    const historicalMeta = priceSuggestion
+      ? {
+          suggestedAverage: priceSuggestion.suggestedAverage,
+          low: priceSuggestion.low,
+          high: priceSuggestion.high,
+          similarQuoteIds: priceSuggestion.similarQuotes.map(entry => entry.id)
+        }
+      : undefined;
+
+    generatedQuote.meta = {
+      ...(generatedQuote.meta ?? {}),
+      projectContext,
+      qualityLevel: normalizedQuality,
+      clientProfile: projectContext.clientProfile,
+      projectType: projectContext.projectType,
+      region: projectContext.region,
+      estimateDetail,
+      debug: debugMeta,
+      ...(historicalMeta ? { historicalPricing: historicalMeta } : {})
+    };
+
+    return generatedQuote;
   }
   
   /**
@@ -1685,8 +2284,18 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
     archContext?: { isArchitecture: boolean; mode: "architect" | "contractor" },
     qualityConfig?: QualityConfig,
     historySnippets: string[] = [],
-    pricingNote?: string
+    pricingNote?: string,
+    options?: { traceId?: string; onFallback?: () => void; model?: string; temperature?: number },
+    projectContext?: ProjectContext,
+    clientProfile?: string,
+    projectType?: string,
+    region?: string
   ): Promise<Array<{ description: string; quantity: number; unitPrice: number; total: number }>> {
+    const trace = options?.traceId || randomUUID();
+    const prefix = `[quote:${trace}]`;
+    const label = (phase: string) => `${prefix} ${phase}`;
+    const model = options?.model || process.env.OPENAI_MODEL || 'gpt-4o-mini';
+    const temperature = options?.temperature ?? 0.4;
     const sectorVoice = this.getSectorVoice(sector, archContext);
     const roleDeclaration = this.buildRoleDeclaration(sector, projectDescription, archContext);
     const qualityStyle = qualityConfig?.styleGuidance
@@ -1696,7 +2305,12 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
       ? `REFERENCIAS HISTÓRICAS DEL MISMO USUARIO:\n${historySnippets.join('\n')}\n\n`
       : '';
     const pricingBlock = pricingNote ? `${pricingNote}\n\n` : '';
+    
+    // Construir contexto adicional del proyecto
+    const contextBlock = this.getProjectContextPrompt(projectContext, clientProfile, projectType, region);
+    const sectorContextBlock = this.getSectorContext(sector, clientProfile, projectType);
 
+    console.time(label('openai.contextualize.buildPrompt'));
     // Si es arquitectura y modo arquitecto, usar prompt especial
     let prompt: string;
     if (archContext?.isArchitecture && archContext.mode === "architect") {
@@ -1705,7 +2319,10 @@ A partir de la descripción del proyecto y de una lista base de fases, reescribe
 
 PROYECTO: "${projectDescription}"
 
-${historyBlock}${pricingBlock}
+${contextBlock}${historyBlock}${pricingBlock}
+
+CONTEXTO DEL SECTOR:
+${sectorContextBlock}
 
 CONCEPTOS BASE A CONTEXTUALIZAR:
 ${baseConcepts.map((c, i) => `${i + 1}. ${c}`).join('\n')}
@@ -1730,7 +2347,10 @@ A partir de un sector y una descripción de proyecto, adapta los conceptos de un
 PROYECTO: "${projectDescription}"
 SECTOR: ${sector}
 
-${historyBlock}${pricingBlock}
+${contextBlock}${historyBlock}${pricingBlock}
+
+CONTEXTO DEL SECTOR:
+${sectorContextBlock}
 
 CONCEPTOS BASE A CONTEXTUALIZAR:
 ${baseConcepts.map((c, i) => `${i + 1}. ${c}`).join('\n')}
@@ -1751,39 +2371,73 @@ ${qualityStyle || '- Mantén el nivel estándar indicado.'}
 DEVUELVE SOLO JSON con este array:
 ["Concepto 1 adaptado", "Concepto 2 adaptado", ...]`;
     }
+    console.timeEnd(label('openai.contextualize.buildPrompt'));
 
-    const response = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [
-        {
-          role: "system",
-          content: "Eres un experto en cotizaciones profesionales. Respondes SOLO con JSON válido."
-        },
-        {
-          role: "user",
-          content: prompt
-        }
-      ],
-      temperature: 0.5,
-      max_tokens: 800,
+    const completionLabel = label('openai.contextualize.request');
+    console.time(completionLabel);
+    console.debug(`${prefix} 📨 Prompt contextualización`, {
+      model,
+      temperature,
+      baseConcepts: baseConcepts.length,
+      includesHistory: historySnippets.length > 0,
+      hasPricingNote: Boolean(pricingNote)
     });
-
-    const content = response.choices[0]?.message?.content?.trim();
-    if (!content) {
-      throw new Error('Respuesta vacía de OpenAI');
+    try {
+      const completion = await openai.chat.completions.create({
+        model,
+        messages: [
+          {
+            role: "system",
+            content: `Eres un asistente experto en ${sector}. Devuelves únicamente JSON válido.`
+          },
+          {
+            role: "user",
+            content: prompt
+          }
+        ],
+        temperature,
+        max_tokens: 700,
+      });
+      const response = completion.choices[0]?.message?.content;
+      if (!response) {
+        throw new Error('Respuesta vacía de OpenAI en contextualización de items');
+      }
+      const parsed = JSON.parse(response);
+      if (completion.usage) {
+        console.debug(`${prefix} 📊 Uso contextualización`, {
+          promptTokens: completion.usage.prompt_tokens,
+          completionTokens: completion.usage.completion_tokens
+        });
+      }
+      return parsed.map((description: string) => ({
+        description,
+        quantity: 1,
+        unitPrice: 0,
+        total: 0
+      }));
+    } catch (error) {
+      const errMessage = error instanceof Error ? error.message : String(error);
+      const openAIError = error as { name?: string; status?: number; error?: { type?: string } };
+      console.error(`${prefix} ❌ contextualizeItemsWithOpenAI falló:`, errMessage, {
+        name: openAIError?.name,
+        status: openAIError?.status,
+        type: openAIError?.error?.type
+      });
+      if (error instanceof Error && error.stack) {
+        console.error(`${prefix} stacktrace:`, error.stack);
+      }
+      options?.onFallback?.();
+      const fallbackItems = await this.contextualizeItemsLocal(
+        projectDescription,
+        sector,
+        baseConcepts,
+        archContext
+      );
+      console.warn(`${prefix} 🔄 Fallback local para contextualizar items`, { count: fallbackItems.length });
+      return fallbackItems;
+    } finally {
+      console.timeEnd(completionLabel);
     }
-
-    // Limpiar markdown si existe
-    const cleanedContent = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    const adaptedDescriptions = JSON.parse(cleanedContent);
-
-    // Mapear a items con cantidad 1
-    return adaptedDescriptions.map((desc: string) => ({
-      description: desc,
-      quantity: 1,
-      unitPrice: 0,
-      total: 0
-    }));
   }
   
   /**
@@ -1858,6 +2512,15 @@ DEVUELVE SOLO JSON con este array:
     });
   }
 
+  private static formatTimings(timings: Record<string, number>): Record<string, number> {
+    const formatted: Record<string, number> = {};
+    for (const [key, value] of Object.entries(timings)) {
+      if (!Number.isFinite(value)) continue;
+      formatted[key] = Number(value.toFixed(2));
+    }
+    return formatted;
+  }
+
   /**
    * Construye prompt para enriquecimiento (solo título, términos, resumen)
    */
@@ -1870,14 +2533,18 @@ DEVUELVE SOLO JSON con este array:
     projectContext?: ProjectContext,
     qualityConfig?: QualityConfig,
     historySnippets: string[] = [],
-    pricingNote?: string
+    pricingNote?: string,
+    clientProfile?: string,
+    projectType?: string,
+    region?: string
   ): string {
     const cfg = getAppConfig();
     const itemsText = items.map((item, i) => 
       `${i + 1}. ${item.description} (Cantidad: ${item.quantity}, Precio: $${item.unitPrice})`
     ).join('\n');
     const sectorVoice = this.getSectorVoice(sector, archContext);
-    const contextNotes = this.getProjectContextPrompt(projectContext);
+    const contextNotes = this.getProjectContextPrompt(projectContext, clientProfile, projectType, region);
+    const sectorContext = this.getSectorContext(sector, clientProfile, projectType);
     const qualityNotes = qualityConfig
       ? `NIVEL DE CALIDAD: ${qualityConfig.styleGuidance}`
       : '';
@@ -1899,6 +2566,9 @@ ${sectorVoice}
 ${qualityNotes}
 
 ${contextNotes}
+
+CONTEXTO DEL SECTOR:
+${sectorContext}
 
 ${historyNotes}
 ${pricingSection}
@@ -1924,8 +2594,11 @@ IMPORTANTE: Respeta los conceptos definidos, solo enriquece título y términos.
     items: Array<{ description: string; quantity: number; unitPrice: number }>,
     priceRange: string,
     sector?: string,
-    archContext?: { isArchitecture: boolean; mode: "architect" | "contractor"; subtype?: "anteproyecto" | "full" }
+    archContext?: { isArchitecture: boolean; mode: "architect" | "contractor"; subtype?: "anteproyecto" | "full" },
+    traceId?: string
   ): Array<{ description: string; quantity: number; unitPrice: number }> {
+    const trace = traceId || randomUUID();
+    const prefix = `[quote:${trace}]`;
     // Contar items que necesitan precio
     const itemsWithoutPrice = items.filter(item => !item.unitPrice || item.unitPrice === 0);
     
@@ -1934,29 +2607,58 @@ IMPORTANTE: Respeta los conceptos definidos, solo enriquece título y términos.
       return items;
     }
 
-    const costEstimate = estimateProjectCost({
-      sector: sector || 'general',
-      priceRange,
-      archContext: archContext?.isArchitecture ? archContext : undefined
-    });
-    const basePrice = costEstimate.targetTotal;
+    let basePrice: number | undefined;
+    try {
+      const estimate = estimateProjectCost({
+        sector: sector || 'general',
+        priceRange,
+        archContext: archContext?.isArchitecture ? archContext : undefined,
+        context: undefined,
+        clientProfile: undefined,
+        projectType: undefined,
+        region: undefined
+      });
+      basePrice = estimate.targetTotal;
+      console.debug(`${prefix} 💸 Estimación para distribuir user-items`, {
+        basePrice,
+        scale: estimate.scale
+      });
+    } catch (error) {
+      const errMessage = error instanceof Error ? error.message : String(error);
+      console.warn(`${prefix} ⚠️ No se pudo estimar costo para user-items`, errMessage);
+    }
+
+    if (!Number.isFinite(basePrice) || (basePrice ?? 0) <= 0) {
+      const knownTotal = items.reduce((sum, item) => {
+        if (item.unitPrice && item.unitPrice > 0) {
+          return sum + item.unitPrice * Math.max(item.quantity, 1);
+        }
+        return sum;
+      }, 0);
+      basePrice = knownTotal > 0 ? knownTotal : Math.max(items.length, 1) * 1000;
+      console.debug(`${prefix} 🔁 Usando basePrice fallback`, { basePrice });
+    }
+
+    const resolvedBasePrice = Math.max(basePrice ?? Math.max(items.length, 1) * 1000, 1);
 
     // Si solo uno sin precio, usar todo el rango
     if (itemsWithoutPrice.length === 1 && items.length === 1) {
       return [{
         description: items[0].description,
         quantity: items[0].quantity,
-        unitPrice: basePrice / items[0].quantity
+        unitPrice: resolvedBasePrice / Math.max(items[0].quantity, 1)
       }];
     }
 
     // Distribuir proporcionalmente
-    const pricePerItem = basePrice / items.length;
+    const pricePerItem = resolvedBasePrice / Math.max(items.length, 1);
     
     return items.map(item => ({
       description: item.description,
       quantity: item.quantity,
-      unitPrice: item.unitPrice > 0 ? item.unitPrice : Math.round(pricePerItem / item.quantity)
+      unitPrice: item.unitPrice > 0
+        ? item.unitPrice
+        : Math.max(1, Math.round(pricePerItem / Math.max(item.quantity, 1)))
     }));
   }
 
@@ -1968,24 +2670,38 @@ IMPORTANTE: Respeta los conceptos definidos, solo enriquece título y términos.
     clientName: string,
     priceRange: string,
     userSector?: string,
-    userItems?: Array<{ description: string; quantity: number; unitPrice: number }>,
+    userItems?: Array<{ description: string; quantity: number; unitPrice: number }> ,
     qualityLevel: QualityLevel = 'estandar',
     existingContext?: ProjectContext,
     historySnippets: string[] = [],
     priceSuggestion?: PriceSuggestionResult,
-    pricingNote?: string
+    pricingNote?: string,
+    traceId?: string
   ): Promise<GeneratedQuote> {
+    const trace = traceId || randomUUID();
+    const prefix = `[quote:${trace}]`;
     const archContext = this.detectArchitectureContext(projectDescription, userSector);
     const normalizedQuality = this.normalizeQualityLevel(qualityLevel);
     const qualityConfig = this.getQualityConfig(normalizedQuality);
     const projectContext = existingContext ?? analyzeProjectContext(projectDescription, priceRange, undefined, userSector);
+    const estimateStart = performance.now();
     const costEstimate = estimateProjectCost({
       sector: userSector || this.classifySectorLocal(projectDescription),
       priceRange,
       archContext: archContext.isArchitecture ? archContext : undefined,
-      context: projectContext
+      context: projectContext,
+      clientProfile: projectContext.clientProfile,
+      projectType: projectContext.projectType,
+      region: projectContext.region
     });
-    const blend = this.blendHistoricTotal(costEstimate.targetTotal, priceSuggestion);
+    const estimateDuration = performance.now() - estimateStart;
+    console.debug(`${prefix} 🧮 Estimación fallback user-items`, {
+      scale: costEstimate.scale,
+      baseTotal: costEstimate.baseTotal,
+      appliedMultipliers: costEstimate.appliedMultipliers,
+      duration: Number(estimateDuration.toFixed(2))
+    });
+    const blend = this.blendHistoricTotal(costEstimate.targetTotal, priceSuggestion, traceId);
     const targetTotal = blend.total;
     const effectivePricingNote = pricingNote || blend.note;
     const adjustedCostEstimate = {
@@ -1998,7 +2714,8 @@ IMPORTANTE: Respeta los conceptos definidos, solo enriquece título y términos.
         userItems,
         priceRange,
         userSector,
-        archContext
+        archContext,
+        trace
       );
       const subtotal = itemsWithPrices.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0);
       const cfg = getAppConfig();
@@ -2009,7 +2726,7 @@ IMPORTANTE: Respeta los conceptos definidos, solo enriquece título y términos.
       const adjustedTotal = baseTotal * qualityConfig.priceMultiplier;
       const adjustedTax = adjustedTotal - adjustedSubtotal;
 
-      return {
+      const fallbackQuote: GeneratedQuote = {
         title: `COTIZACIÓN - ${projectDescription.substring(0, 50)}`,
         clientName,
         projectDescription,
@@ -2027,9 +2744,37 @@ IMPORTANTE: Respeta los conceptos definidos, solo enriquece título y términos.
         fluctuationWarning: projectContext.fluctuationWarning,
         meta: {
           qualityLevel: normalizedQuality,
-          projectContext
+          projectContext,
+          generatedBy: 'user-items-fallback'
         }
       };
+
+      fallbackQuote.meta = {
+        ...(fallbackQuote.meta ?? {}),
+        projectContext,
+        qualityLevel: normalizedQuality,
+        clientProfile: projectContext.clientProfile,
+        projectType: projectContext.projectType,
+        region: projectContext.region,
+        estimateDetail: {
+          scale: costEstimate.scale,
+          baseTotal: costEstimate.baseTotal,
+          appliedMultipliers: costEstimate.appliedMultipliers,
+          blendedHistoricTotal: targetTotal,
+          fallbackUsed: true
+        },
+        debug: {
+          traceId: trace,
+          timings: this.formatTimings({
+            estimateProjectCost: estimateDuration
+          }),
+          flags: { fallback: true, usedLocalItems: true, usedLocalSummary: true },
+          openAIModel: 'local-fallback',
+          historySample: priceSuggestion?.similarQuotes?.map(entry => entry.id) ?? []
+        }
+      };
+
+      return fallbackQuote;
     }
 
     // Si no hay items, usar generador normal
@@ -2041,7 +2786,8 @@ IMPORTANTE: Respeta los conceptos definidos, solo enriquece título y términos.
       projectContext,
       adjustedCostEstimate,
       historySnippets,
-      effectivePricingNote
+      effectivePricingNote,
+      traceId
     );
   }
 

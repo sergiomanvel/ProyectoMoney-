@@ -1,4 +1,5 @@
 import express from 'express';
+import { randomUUID } from 'crypto';
 import { AIService } from '../services/aiService';
 import { requirePlan } from '../middleware/requirePlan';
 import { PDFGenerator } from '../utils/pdfGenerator';
@@ -202,11 +203,34 @@ router.get('/openai/test', requirePlan(), async (_req, res) => {
  * Genera una nueva cotización con IA
  */
 router.post('/generate-quote', requirePlan(), async (req, res) => {
+  const quoteUUID = randomUUID();
+  const requestIdHeader = (req.headers['x-request-id'] || req.headers['x-railway-request-id'] || req.headers['x-amzn-trace-id']) as string | undefined;
+  const prefix = `[quote:${quoteUUID}]`;
+  const label = (phase: string) => `${prefix} ${phase}`;
+  const safeLogBody = {
+    clientName: req.body?.clientName,
+    clientEmail: req.body?.clientEmail,
+    priceRange: req.body?.priceRange,
+    sector: req.body?.sector,
+    qualityLevel: req.body?.qualityLevel,
+    projectLocation: req.body?.projectLocation,
+    itemsCount: Array.isArray(req.body?.items) ? req.body.items.length : 0
+  };
+  res.setHeader('x-quote-trace-id', quoteUUID);
+  console.log(`${prefix} ▶️ POST /api/generate-quote`, {
+    requestId: requestIdHeader,
+    body: safeLogBody
+  });
+  console.time(label('total'));
+
   try {
-    const { clientName, clientEmail, projectDescription, priceRange, sector, projectLocation, items, qualityLevel } = req.body;
+    const { clientName, clientEmail, projectDescription, priceRange, sector, projectLocation, items, qualityLevel, clientProfile, projectType, region } = req.body;
 
     // Validar datos requeridos
     if (!clientName || !clientEmail || !projectDescription || !priceRange) {
+      console.warn(`${prefix} ⚠️ Datos incompletos en la solicitud`, {
+        missing: ['clientName', 'clientEmail', 'projectDescription', 'priceRange'].filter(field => !req.body?.[field])
+      });
       return res.status(400).json({
         error: 'Faltan campos requeridos',
         required: ['clientName', 'clientEmail', 'projectDescription', 'priceRange']
@@ -216,6 +240,7 @@ router.post('/generate-quote', requirePlan(), async (req, res) => {
     // Validar email
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(clientEmail)) {
+      console.warn(`${prefix} ⚠️ Email inválido recibido: ${clientEmail}`);
       return res.status(400).json({ error: 'Email inválido' });
     }
 
@@ -241,22 +266,37 @@ router.post('/generate-quote', requirePlan(), async (req, res) => {
     ) || 'anonymous';
     const ownerId = ownerIdRaw.trim().toLowerCase();
 
-    console.log('🤖 Generando cotización con IA...');
-    
+    console.log(`${prefix} 👤 ownerId resuelto`, { ownerId, requestId: requestIdHeader });
+
     // Generar cotización con IA Enterprise (puede retornar error si descripción inválida)
-    const quoteResult = await AIService.generateQuoteEnterprise(
-      projectDescription,
-      clientName,
-      priceRange,
-      sector,
-      items,
-      qualityLevel || 'estandar',
-      projectLocation,
-      ownerId
-    );
+    const aiLabel = label('AIService.generateQuoteEnterprise');
+    console.time(aiLabel);
+    let quoteResult: GeneratedQuote | { error: true; type: string; message: string };
+    try {
+      quoteResult = await AIService.generateQuoteEnterprise(
+        projectDescription,
+        clientName,
+        priceRange,
+        sector,
+        items,
+        qualityLevel || 'estandar',
+        projectLocation,
+        ownerId,
+        quoteUUID,
+        clientProfile,
+        projectType,
+        region
+      );
+    } catch (serviceError) {
+      console.timeEnd(aiLabel);
+      console.error(`${prefix} ❌ Error invocando AIService.generateQuoteEnterprise`, serviceError);
+      throw serviceError;
+    }
+    console.timeEnd(aiLabel);
 
     // Verificar si la IA retornó error (validación previa)
     if ('error' in quoteResult && quoteResult.error) {
+      console.warn(`${prefix} ⚠️ IA rechazó la solicitud`, quoteResult);
       return res.status(200).json({
         success: false,
         error: quoteResult.type,
@@ -266,24 +306,29 @@ router.post('/generate-quote', requirePlan(), async (req, res) => {
 
     const generatedQuote = quoteResult as GeneratedQuote;
 
-    console.log('📄 Generando PDF...');
-    
-    // Folio y vigencia
+    // Generar PDF
+    const pdfLabel = label('PDFGenerator.generateQuotePDF');
+    console.time(pdfLabel);
     const folio = await generateNextFolio(pool);
     const validUntil = generatedQuote.validUntil
       ? new Date(generatedQuote.validUntil)
       : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const pdfBuffer = await PDFGenerator.generateQuotePDF(
+      generatedQuote,
+      folio,
+      validUntil.toISOString().split('T')[0]
+    );
+    console.timeEnd(pdfLabel);
 
-    // Generar PDF
-    const pdfBuffer = await PDFGenerator.generateQuotePDF(generatedQuote, folio, validUntil.toISOString().split('T')[0]);
-    
     // Guardar en base de datos
+    const dbLabel = label('postgres.insertQuote');
+    console.time(dbLabel);
     const query = `
       INSERT INTO quotes (client_name, client_email, project_description, price_range, generated_content, total_amount, created_at, folio, valid_until, status)
       VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, 'draft')
       RETURNING id
     `;
-    
+
     const values = [
       clientName,
       clientEmail,
@@ -296,30 +341,38 @@ router.post('/generate-quote', requirePlan(), async (req, res) => {
     ];
 
     const result = await pool.query(query, values);
+    console.timeEnd(dbLabel);
     const quoteId = result.rows[0].id;
+    console.log(`${prefix} 💾 Cotización almacenada`, { quoteId });
 
     // Guardar PDF en archivo
+    const fileLabel = label('PDFGenerator.savePDFToFile');
+    console.time(fileLabel);
     const filename = `quote_${quoteId}_${Date.now()}.pdf`;
     const filepath = await PDFGenerator.savePDFToFile(pdfBuffer, filename);
-
-    console.log('✅ Cotización generada exitosamente');
+    console.timeEnd(fileLabel);
+    console.log(`${prefix} 📄 PDF guardado`, { filepath });
 
     logQuoteEvent({
       type: 'quote_generated',
       quoteId,
+      ownerId,
       payload: {
-        ownerId,
+        requestId: requestIdHeader,
+        traceId: quoteUUID,
         sector: sector || generatedQuote.sector,
         priceRange,
         total: generatedQuote.total,
         itemCount: generatedQuote.items?.length,
         generatedBy: generatedQuote.meta?.generatedBy,
-      projectContext: generatedQuote.meta?.projectContext,
-      projectLocation: projectLocation || generatedQuote.meta?.projectContext?.locationHint,
-      locationMultiplier: generatedQuote.meta?.projectContext?.locationMultiplier,
-      fluctuationWarning: generatedQuote.fluctuationWarning
+        projectContext: generatedQuote.meta?.projectContext,
+        projectLocation: projectLocation || generatedQuote.meta?.projectContext?.locationHint,
+        locationMultiplier: generatedQuote.meta?.projectContext?.locationMultiplier,
+        fluctuationWarning: generatedQuote.fluctuationWarning
       }
-    }).catch(() => {});
+    }).catch(loggingError => {
+      console.warn(`${prefix} ⚠️ No se pudo registrar logQuoteEvent`, loggingError?.message || loggingError);
+    });
 
     QuoteHistoryService.recordGeneration({
       ownerId,
@@ -333,8 +386,11 @@ router.post('/generate-quote', requirePlan(), async (req, res) => {
       projectLocation: projectLocation || generatedQuote.meta?.projectContext?.locationHint,
       generatedBy: generatedQuote.meta?.generatedBy,
       generatedQuote,
-      projectContext: generatedQuote.meta?.projectContext
-    }).catch(error => console.error('Error guardando historial de cotizaciones:', error));
+      projectContext: generatedQuote.meta?.projectContext,
+      traceId: quoteUUID
+    }).catch(historyError => console.error(`${prefix} Error guardando historial de cotizaciones:`, historyError));
+
+    console.log(`${prefix} ✅ Cotización generada exitosamente`);
 
     res.json({
       success: true,
@@ -343,15 +399,23 @@ router.post('/generate-quote', requirePlan(), async (req, res) => {
       folio,
       validUntil: validUntil.toISOString(),
       pdfUrl: `/api/quotes/${quoteId}/pdf`,
+      traceId: quoteUUID,
       message: 'Cotización generada exitosamente'
     });
 
   } catch (error) {
-    console.error('Error generando cotización:', error);
+    console.error(`${prefix} ❌ Error generando cotización:`, error instanceof Error ? error.message : error);
+    if (error instanceof Error && error.stack) {
+      console.error(`${prefix} stacktrace:`, error.stack);
+    }
     res.status(500).json({
       error: 'Error generando cotización',
-      message: error instanceof Error ? error.message : 'Error desconocido'
+      message: error instanceof Error ? error.message : 'Error desconocido',
+      traceId: quoteUUID,
+      requestId: requestIdHeader
     });
+  } finally {
+    console.timeEnd(label('total'));
   }
 });
 
