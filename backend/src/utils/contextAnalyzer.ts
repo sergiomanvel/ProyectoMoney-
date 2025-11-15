@@ -414,14 +414,20 @@ function detectSoftwareProfile(desc: string): SoftwareProjectProfile {
     /portal\s+de\s+gestion/
   ]);
 
-  const hasMobileApp = matchAny([
-    /\bapp\s+m(ovil|óvil)/,
-    /\baplicacion\s+m(ovil|óvil)/,
+  let hasMobileApp = matchAny([
+    /\bapp\s+m(ovil|ovil)/,
+    /\baplicacion\s+m(ovil|ovil)/,
     /\bandroid\b/,
     /\bios\b/,
     /aplicacion\s+hibrida/,
     /conductores\s+.*app/
   ]);
+  if (hasMobileApp) {
+    const negativeMobile = /\b(sin|no)\s+(?:contar|tener|requiere?n?|habra|habrá)?\s*(?:una\s+)?(?:app|aplicacion)\s+m(ovil|ovil)/;
+    if (negativeMobile.test(normalized)) {
+      hasMobileApp = false;
+    }
+  }
 
   const hasApi = matchAny([
     /\bapi\b/,
@@ -431,13 +437,19 @@ function detectSoftwareProfile(desc: string): SoftwareProjectProfile {
     /\bwebhooks?\b/
   ]);
 
-  const hasAnalytics = matchAny([
+  let hasAnalytics = matchAny([
     /\bmetricas?\b/,
     /\banalitica\b/,
     /\banalytics?\b/,
     /\breportes?\b/,
     /\bkpi?s?\b/
   ]);
+  if (hasAnalytics) {
+    const negativeAnalytics = /\b(sin|no)\s+(?:contar|tener|requiere?n?)\s+(?:analitica|metricas|kpis|reportes)/;
+    if (negativeAnalytics.test(normalized)) {
+      hasAnalytics = false;
+    }
+  }
 
   const integrationCatalog: Array<{ regex: RegExp; label: string }> = [
     { regex: /google\s+maps?/, label: 'Google Maps' },

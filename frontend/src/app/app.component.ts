@@ -25,9 +25,19 @@ import { QuoteListComponent } from './components/quote-list/quote-list.component
                 <p class="text-sm text-blue-100 mt-1">Generador de Cotizaciones con IA</p>
               </div>
             </div>
-            <nav>
-              <a href="/billing/plans" class="text-white underline mr-4">Suscripción</a>
-              <a href="/billing/status" class="text-white underline">Estado</a>
+            <nav class="flex items-center space-x-3">
+              <a href="/billing/plans" class="header-link">
+                <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v13h16V7M4 7l8-4 8 4M10 11h4"></path>
+                </svg>
+                Planes & Suscripción
+              </a>
+              <a href="/billing/status" class="header-link secondary">
+                <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                </svg>
+                Estado de Cuenta
+              </a>
             </nav>
           </div>
         </div>
@@ -192,6 +202,30 @@ import { QuoteListComponent } from './components/quote-list/quote-list.component
       background: linear-gradient(135deg, #2563eb 0%, #9333ea 100%);
       position: relative;
       overflow: hidden;
+    }
+    .header-link {
+      display: inline-flex;
+      align-items: center;
+      padding: 0.45rem 0.95rem;
+      border-radius: 9999px;
+      border: 1px solid rgba(255,255,255,0.4);
+      color: #fff;
+      font-weight: 600;
+      font-size: 0.9rem;
+      text-decoration: none;
+      background-color: rgba(255,255,255,0.12);
+      transition: all 0.2s ease;
+    }
+    .header-link svg {
+      color: inherit;
+    }
+    .header-link:hover {
+      border-color: #fff;
+      background-color: rgba(255,255,255,0.2);
+    }
+    .header-link.secondary {
+      background-color: transparent;
+      border-color: rgba(255,255,255,0.3);
     }
     .header-cool::before {
       content: '';
