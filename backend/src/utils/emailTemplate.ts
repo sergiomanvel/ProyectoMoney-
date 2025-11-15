@@ -1,5 +1,6 @@
 import { GeneratedQuote } from '../models/Quote';
 import { getAppConfig } from './appConfig';
+import { formatCurrency, getLocaleForCurrency } from './currencyDetector';
 
 export function buildQuoteEmailHTML(opts: {
   clientName: string;
@@ -10,11 +11,16 @@ export function buildQuoteEmailHTML(opts: {
 }): string {
   const { clientName, projectDescription, quote, customMessage, ctaLink } = opts;
 
-  const currency = new Intl.NumberFormat('es-MX', {
+  const currency = quote.currency || 'MXN';
+  const locale = getLocaleForCurrency(currency);
+  
+  const currencyFormatter = new Intl.NumberFormat(locale, {
     style: 'currency',
-    currency: 'MXN',
+    currency: currency,
     maximumFractionDigits: 0,
   });
+  
+  const formatMoney = (amount: number) => currencyFormatter.format(amount);
 
   const itemsRows = quote.items
     .map(
@@ -22,8 +28,8 @@ export function buildQuoteEmailHTML(opts: {
         <tr>
           <td style="padding: 8px 12px; border-bottom: 1px solid #e5e7eb; color: #111827;">${i.description}</td>
           <td style="padding: 8px 12px; border-bottom: 1px solid #e5e7eb; text-align:center; color: #111827;">${i.quantity}</td>
-          <td style="padding: 8px 12px; border-bottom: 1px solid #e5e7eb; text-align:right; color: #111827;">${currency.format(i.unitPrice)}</td>
-          <td style="padding: 8px 12px; border-bottom: 1px solid #e5e7eb; text-align:right; color: #111827; font-weight:600;">${currency.format(i.total)}</td>
+          <td style="padding: 8px 12px; border-bottom: 1px solid #e5e7eb; text-align:right; color: #111827;">${formatMoney(i.unitPrice)}</td>
+          <td style="padding: 8px 12px; border-bottom: 1px solid #e5e7eb; text-align:right; color: #111827; font-weight:600;">${formatMoney(i.total)}</td>
         </tr>`
     )
     .join('');
@@ -88,15 +94,15 @@ export function buildQuoteEmailHTML(opts: {
                 <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:8px;">
                   <tr>
                     <td style="text-align:right; color:#6b7280;">Subtotal:</td>
-                    <td style="text-align:right; width:160px; font-weight:600;">${currency.format(quote.subtotal)}</td>
+                    <td style="text-align:right; width:160px; font-weight:600;">${formatMoney(quote.subtotal)}</td>
                   </tr>
                   <tr>
-                    <td style="text-align:right; color:#6b7280;">IVA (16%):</td>
-                    <td style="text-align:right; width:160px; font-weight:600;">${currency.format(quote.tax)}</td>
+                    <td style="text-align:right; color:#6b7280;">${currency === 'EUR' ? 'IVA (21%)' : currency === 'USD' ? 'Tax' : `IVA (${cfg.defaultTaxPercent}%)`}:</td>
+                    <td style="text-align:right; width:160px; font-weight:600;">${formatMoney(quote.tax)}</td>
                   </tr>
                   <tr>
                     <td style="text-align:right; font-weight:700; padding-top:8px;">Total:</td>
-                    <td style="text-align:right; width:160px; font-weight:700; color:#16a34a; padding-top:8px;">${currency.format(quote.total)}</td>
+                    <td style="text-align:right; width:160px; font-weight:700; color:#16a34a; padding-top:8px;">${formatMoney(quote.total)}</td>
                   </tr>
                 </table>
 

@@ -1,4 +1,4 @@
-import { Component, EventEmitter, Input, Output } from '@angular/core';
+import { Component, EventEmitter, Input, OnChanges, OnInit, Output, SimpleChanges } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { QuoteService, QuoteItem } from '../../services/quote.service';
@@ -22,6 +22,26 @@ import { QuoteService, QuoteItem } from '../../services/quote.service';
               </svg>
               Generada con IA
             </span>
+            <span
+              *ngIf="fallbackActive"
+              class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800"
+            >
+              <svg class="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.721-1.36 3.486 0l6.518 11.594c.75 1.335-.213 3.007-1.742 3.007H3.481c-1.53 0-2.492-1.672-1.742-3.007L8.257 3.1zM11 13a1 1 0 10-2 0 1 1 0 002 0zm-.25-5.25a.75.75 0 00-1.5 0v3.5a.75.75 0 001.5 0v-3.5z" clip-rule="evenodd"></path>
+              </svg>
+              Fallback activo
+            </span>
+            <button
+              type="button"
+              (click)="toggleDebug()"
+              class="inline-flex items-center px-3 py-1 border border-gray-300 rounded-full text-xs font-medium text-gray-600 hover:text-gray-900 hover:border-gray-400 transition"
+            >
+              <svg class="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path>
+              </svg>
+              {{ showDebug ? 'Ocultar debug' : 'Ver debug' }}
+            </button>
           </div>
         </div>
 
@@ -60,6 +80,16 @@ import { QuoteService, QuoteItem } from '../../services/quote.service';
               </span>
             </div>
           </div>
+
+        <div *ngIf="fallbackMessages.length > 0" class="mb-6 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+          <h5 class="text-sm font-medium text-amber-900 mb-1">Advertencias de fallback</h5>
+          <ul class="text-xs text-amber-800 space-y-1 list-disc pl-4">
+            <li *ngFor="let warning of fallbackMessages">{{ warning }}</li>
+          </ul>
+          <p class="text-xs text-amber-700 mt-2">
+            Activa el modo debug para ver la trazabilidad completa.
+          </p>
+        </div>
 
           <!-- Alerta si hay items editables -->
           <div *ngIf="hasEditedItems" class="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
@@ -284,6 +314,117 @@ import { QuoteService, QuoteItem } from '../../services/quote.service';
               <strong>Válida hasta:</strong> {{ quote.validUntil }}
             </p>
           </div>
+
+        <div *ngIf="showDebug" class="mt-6 p-5 bg-white border border-gray-200 rounded-lg shadow-sm">
+          <h5 class="text-sm font-semibold text-gray-900 mb-3 flex items-center">
+            <svg class="w-4 h-4 mr-2 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M12 18.5a.5.5 0 11-1 0 .5.5 0 011 0z"></path>
+            </svg>
+            Panel de depuración
+          </h5>
+
+          <div class="grid md:grid-cols-2 gap-4 text-xs text-gray-600">
+            <div>
+              <h6 class="text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-2">General</h6>
+              <ul class="space-y-1">
+                <li><span class="text-gray-500">TraceId:</span> <span class="font-mono text-gray-800">{{ traceId || '—' }}</span></li>
+                <li><span class="text-gray-500">Generada por:</span> <span class="font-medium text-gray-800">{{ generatedBy || 'sin dato' }}</span></li>
+                <li><span class="text-gray-500">Nivel de calidad:</span> <span class="font-medium text-gray-800">{{ qualityLevel || 'estándar' }}</span></li>
+              </ul>
+              <div *ngIf="historyIds.length > 0" class="mt-3">
+                <h6 class="text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-2">Cotizaciones similares</h6>
+                <div class="flex flex-wrap gap-2">
+                  <span
+                    *ngFor="let id of historyIds"
+                    class="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-indigo-100 text-indigo-700"
+                  >
+                    #{{ id }}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div *ngIf="estimateDetail">
+              <h6 class="text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-2">Estimación</h6>
+              <ul class="space-y-1">
+                <li><span class="text-gray-500">Escala:</span> <span class="font-medium text-gray-800">{{ estimateDetail?.scale || 'N/D' }}</span></li>
+                <li *ngIf="estimateDetail?.baseTotal !== undefined">
+                  <span class="text-gray-500">Base:</span>
+                  <span class="font-medium text-gray-800">{{ estimateDetail?.baseTotal | currency:'MXN':'symbol':'1.0-0' }}</span>
+                </li>
+                <li *ngIf="estimateDetail?.blendedHistoricTotal !== undefined">
+                  <span class="text-gray-500">Blending histórico:</span>
+                  <span class="font-medium text-gray-800">{{ estimateDetail?.blendedHistoricTotal | currency:'MXN':'symbol':'1.0-0' }}</span>
+                </li>
+                <li>
+                  <span class="text-gray-500">Fallback estimación:</span>
+                  <span class="font-medium" [class.text-emerald-600]="!estimateDetail?.fallbackUsed" [class.text-red-600]="estimateDetail?.fallbackUsed">
+                    {{ estimateDetail?.fallbackUsed ? 'Sí' : 'No' }}
+                  </span>
+                </li>
+              </ul>
+              <div *ngIf="estimateMultipliers.length > 0" class="mt-3">
+                <h6 class="text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-2">Multiplicadores aplicados</h6>
+                <div class="flex flex-wrap gap-2">
+                  <span
+                    *ngFor="let multiplier of estimateMultipliers"
+                    class="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-700"
+                  >
+                    {{ multiplier.key }} ×{{ multiplier.value | number:'1.2-2' }}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid md:grid-cols-2 gap-4 text-xs text-gray-600 mt-4">
+            <div>
+              <h6 class="text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-2">Flags</h6>
+              <ul class="space-y-1">
+                <li *ngIf="debugFlags.length === 0" class="text-gray-400">Sin flags registrados</li>
+                <li *ngFor="let flag of debugFlags" class="flex items-center">
+                  <svg class="w-3.5 h-3.5 mr-2" [ngClass]="flag.value ? 'text-emerald-500' : 'text-gray-300'" fill="currentColor" viewBox="0 0 20 20">
+                    <path d="M10 18a8 8 0 100-16 8 8 0 000 16zm-1-11a1 1 0 112 0v3a1 1 0 01-2 0V7zm1 6a1.25 1.25 0 100-2.5A1.25 1.25 0 0010 13z"></path>
+                  </svg>
+                  <span class="font-mono text-gray-700">{{ flag.key }}</span>
+                  <span class="ml-2 font-semibold" [class.text-emerald-600]="flag.value" [class.text-gray-400]="!flag.value">
+                    {{ flag.value ? 'activo' : 'inactivo' }}
+                  </span>
+                </li>
+              </ul>
+            </div>
+            <div>
+              <h6 class="text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-2">Tiempos (ms)</h6>
+              <ul class="space-y-1">
+                <li *ngIf="debugTimings.length === 0" class="text-gray-400">Sin datos de tiempo</li>
+                <li *ngFor="let timing of debugTimings" class="flex justify-between">
+                  <span class="font-mono text-gray-600">{{ timing.key }}</span>
+                  <span class="ml-2 font-semibold text-gray-900">{{ timing.value | number:'1.0-0' }}</span>
+                </li>
+              </ul>
+            </div>
+          </div>
+
+          <div *ngIf="distributionInfo" class="mt-4 text-xs text-gray-600 space-y-1">
+            <h6 class="text-[11px] font-semibold text-gray-500 uppercase tracking-wide">Distribución de precios</h6>
+            <div *ngIf="distributionWeightsLabel">
+              <span class="text-gray-500">Pesos:</span>
+              <span class="font-mono text-gray-800">{{ distributionWeightsLabel }}</span>
+            </div>
+            <div *ngIf="distributionInfo?.marginMultiplier !== undefined">
+              <span class="text-gray-500">Margen:</span>
+              <span class="font-medium text-gray-800">×{{ distributionInfo?.marginMultiplier | number:'1.2-2' }}</span>
+            </div>
+            <div *ngIf="distributionInfo?.overheadMultiplier !== undefined">
+              <span class="text-gray-500">Indirectos:</span>
+              <span class="font-medium text-gray-800">×{{ distributionInfo?.overheadMultiplier | number:'1.2-2' }}</span>
+            </div>
+            <div *ngIf="distributionInfo?.minPerItem !== undefined">
+              <span class="text-gray-500">Mínimo por ítem:</span>
+              <span class="font-medium text-gray-800">{{ distributionInfo?.minPerItem | currency:'MXN':'symbol':'1.0-0' }}</span>
+            </div>
+          </div>
+        </div>
         </div>
 
         <!-- Actions -->
@@ -461,7 +602,7 @@ import { QuoteService, QuoteItem } from '../../services/quote.service';
     @media (min-width: 640px) { .sm\\:flex-row { flex-direction: row; } }
   `]
 })
-export class QuoteViewerComponent {
+export class QuoteViewerComponent implements OnInit, OnChanges {
   @Input() quote: any;
   @Input() quoteId: string | null = null;
   @Output() newQuote = new EventEmitter<void>();
@@ -472,6 +613,26 @@ export class QuoteViewerComponent {
   successMessage = '';
   errorMessage = '';
   historicalPricing: { average: number; low?: number; high?: number; count: number } | null = null;
+
+  showDebug = false;
+  fallbackActive = false;
+  fallbackMessages: string[] = [];
+  debugFlags: Array<{ key: string; value: boolean }> = [];
+  debugTimings: Array<{ key: string; value: number }> = [];
+  distributionInfo: { weights?: number[]; marginMultiplier?: number; overheadMultiplier?: number; minPerItem?: number } | null = null;
+  distributionWeightsLabel = '';
+  estimateDetail: {
+    scale?: string;
+    baseTotal?: number;
+    blendedHistoricTotal?: number;
+    fallbackUsed?: boolean;
+  } | null = null;
+  estimateMultipliers: Array<{ key: string; value: number }> = [];
+  traceId: string | null = null;
+  generatedBy = '';
+  qualityLevel = '';
+  historyIds: number[] = [];
+  editedItemsLoaded = false;
 
   // Items editables
   editedItems: QuoteItem[] = [];
@@ -491,6 +652,31 @@ export class QuoteViewerComponent {
   constructor(private quoteService: QuoteService) {}
 
   ngOnInit() {
+    this.initializeQuote();
+  }
+
+  ngOnChanges(changes: SimpleChanges) {
+    if (changes['quoteId'] && !changes['quoteId'].firstChange) {
+      this.editedItemsLoaded = false;
+    }
+    if (
+      (changes['quote'] && changes['quote'].currentValue) ||
+      (changes['quoteId'] && changes['quoteId'].currentValue)
+    ) {
+      this.initializeQuote();
+    }
+  }
+
+  toggleDebug() {
+    this.showDebug = !this.showDebug;
+  }
+
+  private initializeQuote(): void {
+    if (!this.quote) {
+      return;
+    }
+
+    this.showDebug = false;
     this.displayItems = this.quote.items || [];
     this.displayTotals = {
       subtotal: this.quote.subtotal || 0,
@@ -507,16 +693,100 @@ export class QuoteViewerComponent {
         high: pricingMeta.high,
         count
       };
+    } else {
+      this.historicalPricing = null;
     }
 
-    // Si hay quoteId, intentar cargar items editables
+    this.extractDebugInsights();
+
     if (this.quoteId) {
-      this.loadEditedItems();
+      if (!this.editedItemsLoaded) {
+        this.loadEditedItems();
+      }
+    } else {
+      this.editedItemsLoaded = false;
     }
   }
 
+  private extractDebugInsights(): void {
+    const meta = this.quote?.meta || {};
+    const debug = meta.debug || {};
+
+    this.generatedBy = meta.generatedBy || '';
+    this.qualityLevel = meta.qualityLevel || '';
+    this.traceId = debug.traceId || null;
+
+    this.debugFlags = [];
+    this.debugTimings = [];
+    this.distributionInfo = null;
+    this.estimateDetail = null;
+    this.estimateMultipliers = [];
+    this.historyIds = [];
+    this.fallbackMessages = [];
+    this.fallbackActive = false;
+
+    const flagsObj = (debug.flags as Record<string, boolean>) || {};
+    this.debugFlags = Object.entries(flagsObj).map(([key, value]) => ({ key, value: !!value }));
+    const fallbackTriggers = ['fallback', 'usedlocalitems', 'usedlocalsummary', 'usedfallback'];
+    this.fallbackActive = this.debugFlags.some(
+      entry => entry.value && fallbackTriggers.some(trigger => entry.key.toLowerCase().includes(trigger))
+    );
+
+    if (flagsObj['usedLocalItems']) {
+      this.fallbackMessages.push('Los conceptos fueron contextualizados con fallback local.');
+    }
+    if (flagsObj['usedLocalSummary']) {
+      this.fallbackMessages.push('El resumen comercial se generó con plantilla local.');
+    }
+    if (flagsObj['usedFallback']) {
+      this.fallbackMessages.push('Se activó el modo fallback para completar la cotización.');
+    }
+
+    const estimate = meta.estimateDetail || {};
+    if (Object.keys(estimate).length > 0) {
+      this.estimateDetail = {
+        scale: estimate.scale,
+        baseTotal: estimate.baseTotal,
+        blendedHistoricTotal: estimate.blendedHistoricTotal,
+        fallbackUsed: !!estimate.fallbackUsed
+      };
+      const multipliers = estimate.appliedMultipliers || {};
+      this.estimateMultipliers = Object.entries(multipliers)
+        .filter(([_, val]) => typeof val === 'number' && !Number.isNaN(val as number))
+        .map(([key, val]) => ({ key, value: Number(val) }));
+
+      if (estimate.fallbackUsed && !this.fallbackMessages.includes('Se activó el modo fallback para completar la cotización.')) {
+        this.fallbackMessages.push('Se activó el modo fallback para completar la cotización.');
+      }
+    }
+
+    const timingsObj = debug.timings || {};
+    this.debugTimings = Object.entries(timingsObj)
+      .map(([key, val]) => ({ key, value: Math.round(Number(val) || 0) }))
+      .filter(entry => Number.isFinite(entry.value))
+      .sort((a, b) => b.value - a.value);
+
+    this.distributionInfo = debug.distribution || null;
+    if (this.distributionInfo?.weights && Array.isArray(this.distributionInfo.weights)) {
+      this.distributionWeightsLabel = this.distributionInfo.weights
+        .map(weight => Number(weight).toFixed(2))
+        .join(', ');
+    } else {
+      this.distributionWeightsLabel = '';
+    }
+
+    const historySample = Array.isArray(debug.historySample) ? debug.historySample : [];
+    const similarIds = Array.isArray(meta.historicalPricing?.similarQuoteIds)
+      ? meta.historicalPricing.similarQuoteIds
+      : [];
+    this.historyIds = Array.from(new Set([...similarIds, ...historySample]));
+
+    this.fallbackActive = this.fallbackActive || (this.estimateDetail?.fallbackUsed ?? false) || this.fallbackMessages.length > 0;
+  }
+
   loadEditedItems() {
-    if (!this.quoteId) return;
+    if (!this.quoteId || this.editedItemsLoaded) return;
+    this.editedItemsLoaded = true;
     this.quoteService.getQuoteItems(parseInt(this.quoteId)).subscribe({
       next: (res) => {
         if (res.items && res.items.length > 0) {
@@ -535,7 +805,10 @@ export class QuoteViewerComponent {
           }
         }
       },
-      error: (err) => console.error('Error cargando items:', err)
+      error: (err) => {
+        console.error('Error cargando items:', err);
+        this.editedItemsLoaded = false;
+      }
     });
   }
 

@@ -12,6 +12,7 @@ export type QuoteLearningEventType =
 export interface QuoteLearningEvent {
   type: QuoteLearningEventType;
   quoteId?: number;
+  ownerId?: string;
   timestamp?: string;
   payload?: Record<string, any>;
 }

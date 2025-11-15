@@ -23,11 +23,21 @@ export interface DistributionResult {
 
 const WEIGHT_PROFILES: Record<string, Record<string, number>> = {
   software: {
+    'descubrimiento': 0.12,
     'análisis': 0.15,
-    'diseño': 0.18,
-    'desarrollo': 0.35,
-    'integracion': 0.30,
+    'arquitectura': 0.18,
+    'diseño': 0.16,
+    'ui/ux': 0.16,
+    'backend': 0.35,
+    'frontend': 0.28,
+    'integracion': 0.25,
+    'api': 0.18,
+    'devops': 0.18,
+    'seguridad': 0.16,
+    'migración': 0.20,
     'pruebas': 0.18,
+    'qa': 0.18,
+    'ci/cd': 0.18,
     'soporte': 0.12,
     'documentacion': 0.10,
     'capacitacion': 0.12,
@@ -400,7 +410,37 @@ export function distributeTotalsByWeight(
 
   const targetSubtotal = targetTotal / (1 + taxPercent / 100);
   const baseSubtotal = targetSubtotal / (marginMultiplier * overheadMultiplier);
-  const minPerItem = baseSubtotal * 0.05 / Math.max(items.length, 1);
+  
+  // Precio mínimo por ítem: 5% del subtotal base dividido entre items, con un mínimo absoluto según el sector
+  const minPercent = 0.05; // 5% del subtotal base
+  const minPerItemPercent = baseSubtotal * minPercent / Math.max(items.length, 1);
+  
+  // Precio mínimo absoluto según sector (evita ítems a 13 MXN o cantidades irreales)
+  const sectorMinPrices: Record<string, number> = {
+    software: 800,        // Valores en EUR (equivalente ~900 USD)
+    marketing: 500,
+    construccion: 2500,
+    consultoria: 700,
+    ecommerce: 600,
+    eventos: 500,
+    comercio: 500,
+    manufactura: 1500,
+    formacion: 400,
+    general: 500
+  };
+  
+  const absoluteMinPrice = sectorMinPrices[sector || 'general'] || 1500;
+  const minPerItem = Math.max(minPerItemPercent, absoluteMinPrice);
+  
+  if (prefix) {
+    console.debug(`${prefix} 💰 Precio mínimo por ítem`, {
+      minPercent: `${(minPercent * 100).toFixed(1)}%`,
+      minPerItemPercent: parseFloat(minPerItemPercent.toFixed(2)),
+      absoluteMinPrice,
+      finalMinPerItem: parseFloat(minPerItem.toFixed(2)),
+      sector: sector || 'general'
+    });
+  }
 
   let distributedItems = items.map((item, index) => {
     const weightRatio = weights[index] / totalWeight;
@@ -429,6 +469,77 @@ export function distributeTotalsByWeight(
     distributedItems = distributedItems.map(item => {
       let adjusted = item.total * ratio;
       adjusted = nudgeValue(adjusted, numberIndex++);
+      // Validar que el precio no sea menor al mínimo absoluto
+      if (adjusted < minPerItem) {
+        if (prefix) {
+          console.warn(`${prefix} ⚠️ Precio ajustado por debajo del mínimo (${adjusted.toFixed(2)} < ${minPerItem.toFixed(2)}), aplicando mínimo`, {
+            description: item.description,
+            originalTotal: adjusted,
+            minPerItem
+          });
+        }
+        adjusted = minPerItem;
+      }
+      const unit = adjusted / Math.max(item.quantity, 1);
+      return {
+        ...item,
+        total: adjusted,
+        unitPrice: unit
+      };
+    });
+  }
+
+  // Validación final: asegurar que ningún ítem esté por debajo del mínimo absoluto
+  distributedItems = distributedItems.map((item, index) => {
+    let finalTotal = item.total;
+    let finalUnitPrice = item.unitPrice;
+    
+    // Si el total es menor al mínimo absoluto, ajustar
+    if (finalTotal < minPerItem) {
+      if (prefix) {
+        console.warn(`${prefix} ⚠️ Item con precio por debajo del mínimo absoluto`, {
+          description: item.description,
+          originalTotal: finalTotal,
+          minPerItem,
+          absoluteMinPrice
+        });
+      }
+      finalTotal = minPerItem;
+      finalUnitPrice = minPerItem / Math.max(item.quantity, 1);
+    }
+    
+    // Validar que el precio unitario sea razonable (mínimo 100 MXN)
+    const minUnitPrice = absoluteMinPrice / 10; // 10% del mínimo absoluto por ítem
+    if (finalUnitPrice < minUnitPrice && item.quantity === 1) {
+      if (prefix) {
+        console.warn(`${prefix} ⚠️ Precio unitario muy bajo, ajustando`, {
+          description: item.description,
+          originalUnitPrice: finalUnitPrice,
+          minUnitPrice
+        });
+      }
+      finalUnitPrice = minUnitPrice;
+      finalTotal = finalUnitPrice * Math.max(item.quantity, 1);
+    }
+    
+    return {
+      ...item,
+      total: finalTotal,
+      unitPrice: finalUnitPrice
+    };
+  });
+  
+  // Recalcular subtotal después de los ajustes
+  subtotal = distributedItems.reduce((sum, item) => sum + item.total, 0);
+  if (Math.abs(subtotal - targetSubtotal) > 1) {
+    // Si después de los ajustes el subtotal difiere mucho, reajustar proporcionalmente
+    const ratio = targetSubtotal / subtotal;
+    distributedItems = distributedItems.map(item => {
+      let adjusted = item.total * ratio;
+      // Asegurar que no caiga por debajo del mínimo
+      if (adjusted < minPerItem) {
+        adjusted = minPerItem;
+      }
       const unit = adjusted / Math.max(item.quantity, 1);
       return {
         ...item,
@@ -441,6 +552,27 @@ export function distributeTotalsByWeight(
   const formattedItems = distributedItems.map((item, index) => {
     const total = parseFloat(item.total.toFixed(2));
     const unitPrice = parseFloat(item.unitPrice.toFixed(2));
+    
+    // Validación final: verificar que el precio sea razonable
+    if (total < minPerItem) {
+      if (prefix) {
+        console.error(`${prefix} ❌ Item con precio final por debajo del mínimo`, {
+          description: item.description,
+          total,
+          minPerItem,
+          absoluteMinPrice
+        });
+      }
+      // Aplicar mínimo absoluto como última medida
+      const minTotal = minPerItem;
+      const minUnit = minTotal / Math.max(item.quantity, 1);
+      return {
+        ...item,
+        total: parseFloat(minTotal.toFixed(2)),
+        unitPrice: parseFloat(minUnit.toFixed(2))
+      };
+    }
+    
     if (prefix && weights[index] === 0.1 && archContext?.isArchitecture && archContext.mode === 'architect') {
       console.debug(`${prefix} ℹ️ Peso por defecto aplicado en posición ${index}`, { description: item.description });
     }

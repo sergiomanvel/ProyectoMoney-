@@ -6,23 +6,46 @@ dotenv.config();
 // Configurar pool igual que en server.ts para Railway
 const dbPublicUrl = process.env.DATABASE_PUBLIC_URL;
 const dbUrl = process.env.DATABASE_URL;
-const isInternalUrl = dbPublicUrl?.includes('railway.internal') || dbUrl?.includes('railway.internal');
+const rawDbSsl = (process.env.DB_SSL || '').toLowerCase();
+const forceSSL = rawDbSsl === 'true';
+const disableSSL = rawDbSsl === 'false';
+
+const shouldUseSSL = (host?: string) => {
+  const normalizedHost = (host || '').toLowerCase();
+  if (forceSSL) return true;
+  if (disableSSL) return false;
+  const isInternalHost = normalizedHost.includes('.railway.internal') || normalizedHost.includes('.internal');
+  return !isInternalHost;
+};
+
+const buildPoolConfigFromUrl = (label: 'DATABASE_PUBLIC_URL' | 'DATABASE_URL', value: string) => {
+  let host: string | undefined;
+  try {
+    host = new URL(value).hostname;
+  } catch {
+    host = undefined;
+  }
+  const useSSL = shouldUseSSL(host);
+  console.log(`📊 [migrations] Usando ${label} (${host ?? 'host desconocido'})`);
+  console.log(`🔒 [migrations] SSL requerido: ${useSSL}`);
+  return {
+    connectionString: value,
+    ssl: useSSL ? { rejectUnauthorized: false } : false
+  };
+};
 
 let poolConfig: any = {};
-if (dbPublicUrl && !isInternalUrl) {
-  poolConfig = {
-    connectionString: dbPublicUrl,
-    ssl: { rejectUnauthorized: false }
-  };
-} else if (dbUrl && !isInternalUrl) {
-  poolConfig = {
-    connectionString: dbUrl,
-    ssl: { rejectUnauthorized: false }
-  };
+if (dbPublicUrl) {
+  poolConfig = buildPoolConfigFromUrl('DATABASE_PUBLIC_URL', dbPublicUrl);
+} else if (dbUrl) {
+  poolConfig = buildPoolConfigFromUrl('DATABASE_URL', dbUrl);
 } else {
-  const useSSL = process.env.NODE_ENV === 'production' || process.env.DB_HOST?.includes('railway') || process.env.DB_HOST?.includes('rlwy');
+  const dbHost = process.env.DB_HOST || process.env.PGHOST || 'localhost';
+  const useSSL = shouldUseSSL(dbHost);
+  console.log(`📊 [migrations] Conectando a PostgreSQL: ${dbHost}:${process.env.DB_PORT}/${process.env.DB_NAME}`);
+  console.log(`🔒 [migrations] SSL requerido: ${useSSL}`);
   poolConfig = {
-    host: process.env.DB_HOST || 'localhost',
+    host: dbHost,
     port: parseInt(process.env.DB_PORT || '5432'),
     database: process.env.DB_NAME || 'autoquote',
     user: process.env.DB_USER || 'postgres',

@@ -4,11 +4,67 @@ import { FormBuilder, FormGroup, Validators, ReactiveFormsModule, FormArray } fr
 import { QuoteService, QuoteRequest } from '../../services/quote.service';
 import { FormsModule } from '@angular/forms';
 
+type TicketScale = 'small' | 'standard' | 'enterprise';
+
 interface UserItem {
   description: string;
   quantity: number;
   unitPrice: number;
 }
+
+interface PricePresetOption {
+  key: TicketScale;
+  label: string;
+  helper?: string;
+}
+
+const FRONTEND_SECTOR_PRICE_PRESETS: Record<string, PricePresetOption[]> = {
+  software: [
+    { key: 'small', label: 'Proyecto pequeño (2.000 – 6.000 €)' },
+    { key: 'standard', label: 'Proyecto estándar (6.000 – 18.000 €)' },
+    { key: 'enterprise', label: 'Proyecto grande (18.000 – 60.000 €)' }
+  ],
+  ecommerce: [
+    { key: 'small', label: 'Tienda pequeña (1.500 – 4.000 €)' },
+    { key: 'standard', label: 'Tienda estándar (4.000 – 10.000 €)' },
+    { key: 'enterprise', label: 'Ecommerce avanzado (10.000 – 35.000 €)' }
+  ],
+  marketing: [
+    { key: 'small', label: 'Campaña básica mensual (400 – 1.200 €)' },
+    { key: 'standard', label: 'Gestión integral (1.200 – 4.000 €)' },
+    { key: 'enterprise', label: 'Retainer premium (4.000 – 15.000 €)' }
+  ],
+  consultoria: [
+    { key: 'small', label: 'Diagnóstico puntual (800 – 3.000 €)' },
+    { key: 'standard', label: 'Proyecto consultoría (3.000 – 12.000 €)' },
+    { key: 'enterprise', label: 'Transformación enterprise (12.000 – 45.000 €)' }
+  ],
+  construccion: [
+    { key: 'small', label: 'Reforma menor (3.000 – 15.000 €)' },
+    { key: 'standard', label: 'Proyecto medio (15.000 – 45.000 €)' },
+    { key: 'enterprise', label: 'Obra integral (45.000 – 200.000 €)' }
+  ],
+  eventos: [
+    { key: 'small', label: 'Evento boutique (2.000 – 10.000 €)' },
+    { key: 'standard', label: 'Producción completa (10.000 – 40.000 €)' },
+    { key: 'enterprise', label: 'Evento masivo (40.000 – 250.000 €)' }
+  ],
+  comercio: [
+    { key: 'small', label: 'Acción puntual tienda (300 – 1.500 €)' },
+    { key: 'standard', label: 'Campaña retail completa (1.500 – 6.000 €)' },
+    { key: 'enterprise', label: 'Programa omnicanal (6.000 – 40.000 €)' }
+  ],
+  manufactura: [
+    { key: 'small', label: 'Optimización puntual (300 – 2.000 €)' },
+    { key: 'standard', label: 'Proyecto de mejora (2.000 – 12.000 €)' },
+    { key: 'enterprise', label: 'Programa operativo integral (12.000 – 60.000 €)' }
+  ],
+  formacion: [
+    { key: 'small', label: 'Taller/curso corto (600 – 3.000 €)' },
+    { key: 'standard', label: 'Programa formativo (3.000 – 15.000 €)' },
+    { key: 'enterprise', label: 'Academia corporativa (15.000 – 80.000 €)' }
+  ]
+};
 
 @Component({
   selector: 'app-quote-form',
@@ -290,18 +346,21 @@ interface UserItem {
               formControlName="priceRange"
               class="form-control"
               [class.error]="isFieldInvalid('priceRange')"
+              [disabled]="!quoteForm.get('sector')?.value"
             >
-              <option value="">Selecciona un rango de precio</option>
-              <option value="500 - 2,000">$500 - $2,000</option>
-              <option value="2,000 - 5,000">$2,000 - $5,000</option>
-              <option value="5,000 - 10,000">$5,000 - $10,000</option>
-              <option value="10,000 - 20,000">$10,000 - $20,000</option>
-              <option value="20,000 - 40,000">$20,000 - $40,000</option>
-              <option value="40,000 - 75,000">$40,000 - $75,000</option>
-              <option value="75,000 - 125,000">$75,000 - $125,000</option>
-              <option value="125,000 - 250,000">$125,000 - $250,000</option>
-              <option value="250,000+">$250,000+</option>
+              <option value="" disabled [selected]="!quoteForm.get('priceRange')?.value">
+                {{ quoteForm.get('sector')?.value ? 'Selecciona un rango para este sector' : 'Primero selecciona un sector' }}
+              </option>
+              <option
+                *ngFor="let option of pricePresetsForSelectedSector"
+                [value]="option.key"
+              >
+                {{ option.label }}
+              </option>
             </select>
+            <div class="text-sm text-gray-500 mt-1" *ngIf="pricePresetsForSelectedSector.length > 0">
+              Rangos orientativos basados en el mercado español para este sector.
+            </div>
             <div *ngIf="isFieldInvalid('priceRange')" class="error-message">
               Selecciona un rango de precio
             </div>
@@ -605,8 +664,10 @@ export class QuoteFormComponent {
     this.quoteForm.patchValue({
       clientProfile: '',
       projectType: '',
-      region: ''
+      region: '',
+      priceRange: ''
     });
+    this.quoteForm.get('priceRange')?.markAsUntouched();
   }
 
   showClientProfile(): boolean {
@@ -623,6 +684,14 @@ export class QuoteFormComponent {
     // Mostrar selector de región para todos los sectores
     const sector = this.quoteForm.get('sector')?.value;
     return !!sector && sector !== '';
+  }
+
+  get pricePresetsForSelectedSector(): PricePresetOption[] {
+    const sector = this.quoteForm.get('sector')?.value;
+    if (!sector) {
+      return [];
+    }
+    return FRONTEND_SECTOR_PRICE_PRESETS[sector] ?? [];
   }
 
   isFieldInvalid(fieldName: string): boolean {
@@ -657,25 +726,25 @@ export class QuoteFormComponent {
       this.isLoading = true;
       
       const formValue = this.quoteForm.value;
-      const request: QuoteRequest = {
-        clientName: formValue.clientName,
-        clientEmail: formValue.clientEmail,
-        ownerId: formValue.ownerId?.trim() || undefined,
-        projectDescription: formValue.projectDescription,
-        priceRange: formValue.priceRange,
-        sector: formValue.sector,
-        projectLocation: formValue.projectLocation?.trim() || undefined,
-        clientProfile: formValue.clientProfile?.trim() || undefined,
-        projectType: formValue.projectType?.trim() || undefined,
-        region: formValue.region?.trim() || undefined,
-        items: this.defineItems && this.userItems.length > 0 
-          ? this.userItems.map(item => ({
-              description: item.description.trim(),
-              quantity: item.quantity,
-              unitPrice: item.unitPrice || 0
-            }))
-          : undefined
-      };
+  const request: QuoteRequest = {
+    clientName: formValue.clientName,
+    clientEmail: formValue.clientEmail,
+    ownerId: formValue.ownerId?.trim() || undefined,
+    projectDescription: formValue.projectDescription,
+    priceRange: formValue.priceRange,
+    sector: formValue.sector,
+    projectLocation: formValue.projectLocation?.trim() || undefined,
+    clientProfile: formValue.clientProfile?.trim() || undefined,
+    projectType: formValue.projectType?.trim() || undefined,
+    region: formValue.region?.trim() || undefined,
+    items: this.defineItems && this.userItems.length > 0 
+      ? this.userItems.map(item => ({
+          description: item.description.trim(),
+          quantity: item.quantity,
+          unitPrice: item.unitPrice || 0
+        }))
+      : undefined
+  };
       
       this.quoteService.generateQuote(request).subscribe({
         next: (response) => {

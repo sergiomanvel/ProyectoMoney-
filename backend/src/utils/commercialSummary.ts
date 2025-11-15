@@ -10,14 +10,26 @@ export async function generateCommercialSummary(
   clientName: string,
   total: number,
   openai?: any,
-  archContext?: { isArchitecture: boolean; mode: "architect" | "contractor" }
+  archContext?: { isArchitecture: boolean; mode: "architect" | "contractor" },
+  options?: { traceId?: string; onFallback?: () => void }
 ): Promise<string> {
   // Si OpenAI está disponible, generar resumen personalizado
   if (openai) {
     try {
-      return await generateWithOpenAI(projectDescription, clientName, openai, archContext);
+      return await generateWithOpenAI(projectDescription, clientName, openai, archContext, options?.traceId);
     } catch (error) {
-      console.warn('⚠️ OpenAI falló para resumen comercial, usando template local');
+      const errMessage = error instanceof Error ? error.message : String(error);
+      const openAIError = error as { name?: string; status?: number; error?: { type?: string } };
+      if (options?.traceId) {
+        console.warn(`[quote:${options.traceId}] ⚠️ OpenAI falló para resumen comercial, usando template local`, errMessage, {
+          name: openAIError?.name,
+          status: openAIError?.status,
+          type: openAIError?.error?.type
+        });
+      } else {
+        console.warn('⚠️ OpenAI falló para resumen comercial, usando template local', errMessage);
+      }
+      options?.onFallback?.();
       return generateLocalSummary(projectDescription, clientName, archContext);
     }
   }
@@ -33,7 +45,8 @@ async function generateWithOpenAI(
   projectDescription: string,
   clientName: string,
   openai: any,
-  archContext?: { isArchitecture: boolean; mode: "architect" | "contractor" }
+  archContext?: { isArchitecture: boolean; mode: "architect" | "contractor" },
+  traceId?: string
 ): Promise<string> {
   let prompt: string;
   
@@ -87,6 +100,14 @@ Responde SOLO con el párrafo, sin comillas ni markdown.`;
   const summary = response.choices[0]?.message?.content?.trim();
   if (!summary) {
     throw new Error('Resumen vacío de OpenAI');
+  }
+
+  if (traceId) {
+    console.log(`[quote:${traceId}] 📝 Resumen comercial generado con OpenAI`, {
+      model: 'gpt-4o-mini',
+      promptTokens: response.usage?.prompt_tokens,
+      completionTokens: response.usage?.completion_tokens
+    });
   }
 
   // Limpiar comillas si existen

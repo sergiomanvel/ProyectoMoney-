@@ -3,21 +3,14 @@ import { GeneratedQuote, QuoteItem } from '../models/Quote';
 import fs from 'fs';
 import path from 'path';
 import { getAppConfig } from './appConfig';
+import { formatCurrency, getLocaleForCurrency } from './currencyDetector';
 
 export class PDFGenerator {
   /**
-   * Formatea montos a MXN con locale es-MX
+   * Formatea montos según la moneda de la cotización
    */
-  private static formatMoney(amount: number): string {
-    try {
-      return new Intl.NumberFormat('es-MX', {
-        style: 'currency',
-        currency: 'MXN',
-        maximumFractionDigits: 0
-      }).format(amount);
-    } catch {
-      return `$${Math.round(amount).toLocaleString('es-MX')}`;
-    }
+  private static formatMoney(amount: number, currency: string = 'MXN'): string {
+    return formatCurrency(amount, currency);
   }
   /**
    * Genera un PDF profesional de la cotización
@@ -58,6 +51,7 @@ export class PDFGenerator {
 
         // Usar items editados si están disponibles
         const finalItems = editedItems || quote.items;
+        const currency = quote.currency || 'MXN';
         
         // Calcular totales si hay items editados
         let finalQuote = quote;
@@ -70,6 +64,7 @@ export class PDFGenerator {
           finalQuote.projectDescription = quote.projectDescription;
           finalQuote.validUntil = quote.validUntil;
           finalQuote.terms = quote.terms;
+          finalQuote.currency = currency;
         }
 
         // Header
@@ -82,10 +77,10 @@ export class PDFGenerator {
         this.addProjectDescription(doc, finalQuote, secondaryColor);
         
         // Tabla de items (usar items editados)
-        this.addItemsTable(doc, finalItems, primaryColor, secondaryColor);
+        this.addItemsTable(doc, finalItems, primaryColor, secondaryColor, currency);
         
         // Totales
-        this.addTotals(doc, finalQuote, accentColor);
+        this.addTotals(doc, finalQuote, accentColor, currency);
         
         // Términos y condiciones
         this.addTerms(doc, finalQuote, secondaryColor);
@@ -124,6 +119,7 @@ export class PDFGenerator {
 
     // Fecha
     const currentDate = new Date().toLocaleDateString('es-ES');
+    const currency = quote.currency || 'MXN';
     doc.fontSize(10)
        .fillColor('#64748b')
        .text(`Fecha: ${currentDate}`, 400, 50);
@@ -132,32 +128,41 @@ export class PDFGenerator {
     } else {
       doc.text(`Válida hasta: ${quote.validUntil}`, 400, 65);
     }
-    doc.text('Moneda: MXN', 400, 80);
+    doc.text(`Moneda: ${currency}`, 400, 80);
   }
 
   /**
    * Añade información del cliente
    */
   private static addClientInfo(doc: PDFKit.PDFDocument, quote: GeneratedQuote, color: string) {
+    if (doc.y < 200) {
+      doc.y = 200;
+    }
+    this.ensureSpace(doc, 40);
+    doc.moveDown(0.5);
     doc.fontSize(14)
        .fillColor('#1f2937')
-       .text('Información del Cliente', 50, 180)
-       .fontSize(12)
+       .text('Información del Cliente', { align: 'left' });
+    doc.moveDown(0.2);
+    doc.fontSize(12)
        .fillColor(color)
-       .text(`Cliente: ${quote.clientName}`, 50, 205);
+       .text(`Cliente: ${quote.clientName}`, { align: 'left' });
   }
 
   /**
    * Añade descripción del proyecto
    */
   private static addProjectDescription(doc: PDFKit.PDFDocument, quote: GeneratedQuote, color: string) {
+    this.ensureSpace(doc, 80);
+    doc.moveDown(1);
     doc.fontSize(14)
        .fillColor('#1f2937')
-       .text('Descripción del Proyecto', 50, 240)
-       .fontSize(11)
+       .text('Descripción del Proyecto', { align: 'left' });
+    doc.moveDown(0.3);
+    doc.fontSize(11)
        .fillColor(color)
-       .text(quote.projectDescription, 50, 265, {
-         width: 500,
+       .text(quote.projectDescription, {
+         width: doc.page.width - doc.page.margins.left - doc.page.margins.right,
          align: 'justify'
        });
   }
@@ -169,67 +174,83 @@ export class PDFGenerator {
     doc: PDFKit.PDFDocument, 
     items: QuoteItem[], 
     primaryColor: string, 
-    secondaryColor: string
+    secondaryColor: string,
+    currency: string = 'MXN'
   ) {
-    const startY = 320;
-    let currentY = startY;
+    doc.moveDown(1);
+    const tableWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+    const startX = doc.page.margins.left;
+    const headerHeight = 24;
+    const rowHeight = 26;
+    const colDesc = startX + 10;
+    const colQty = startX + tableWidth * 0.65;
+    const colUnit = startX + tableWidth * 0.78;
+    const colTotal = startX + tableWidth * 0.90;
 
-    // Header de la tabla
-    doc.fontSize(12)
-       .fillColor('#ffffff')
-       .rect(50, currentY, 500, 25)
-       .fill(primaryColor)
-       .text('Descripción', 60, currentY + 8)
-       .text('Cantidad', 350, currentY + 8)
-       .text('Precio Unit.', 400, currentY + 8)
-       .text('Total', 480, currentY + 8);
+    const drawHeader = () => {
+      this.ensureSpace(doc, headerHeight + 10);
+      const y = doc.y;
+      doc.save();
+      doc.rect(startX, y, tableWidth, headerHeight).fill(primaryColor);
+      doc.restore();
+      doc.fontSize(11).fillColor('#ffffff');
+      doc.text('Descripción', colDesc, y + 7);
+      doc.text('Cantidad', colQty, y + 7);
+      doc.text('Precio Unit.', colUnit, y + 7);
+      doc.text('Total', colTotal, y + 7);
+      doc.y = y + headerHeight;
+    };
 
-    currentY += 25;
-
-    // Items
-    items.forEach((item, index) => {
+    const drawRow = (item: QuoteItem, index: number) => {
+      this.ensureSpace(doc, rowHeight + 10);
+      const y = doc.y;
       const bgColor = index % 2 === 0 ? '#f8fafc' : '#ffffff';
-      
-      doc.fillColor(bgColor)
-         .rect(50, currentY, 500, 30)
-         .fill()
-         .fontSize(10)
-         .fillColor('#1f2937')
-         .text(item.description, 60, currentY + 8, { width: 280 })
-         .text(item.quantity.toString(), 350, currentY + 8)
-         .text(`${this.formatMoney(item.unitPrice)}`, 400, currentY + 8)
-         .text(`${this.formatMoney(item.total)}`, 480, currentY + 8);
+      doc.save();
+      doc.rect(startX, y, tableWidth, rowHeight).fill(bgColor);
+      doc.restore();
+      doc.fontSize(10).fillColor('#1f2937');
+      doc.text(item.description, colDesc, y + 6, { width: colQty - colDesc - 10 });
+      doc.text(item.quantity.toString(), colQty, y + 6, { width: colUnit - colQty - 10, align: 'left' });
+      doc.text(`${this.formatMoney(item.unitPrice, currency)}`, colUnit, y + 6, { width: colTotal - colUnit - 5, align: 'left' });
+      doc.text(`${this.formatMoney(item.total, currency)}`, colTotal, y + 6, { align: 'left' });
+      doc.y = y + rowHeight;
+    };
 
-      currentY += 30;
-    });
+    drawHeader();
+    items.forEach((item, index) => drawRow(item, index));
 
-    // Línea separadora
     doc.strokeColor(primaryColor)
-       .lineWidth(2)
-       .moveTo(50, currentY)
-       .lineTo(550, currentY)
+       .lineWidth(1)
+       .moveTo(startX, doc.y)
+       .lineTo(startX + tableWidth, doc.y)
        .stroke();
+    doc.moveDown(0.5);
   }
 
   /**
    * Añade sección de totales
    */
-  private static addTotals(doc: PDFKit.PDFDocument, quote: GeneratedQuote, accentColor: string) {
-    const startY = 320 + (quote.items.length * 30) + 40;
+  private static addTotals(doc: PDFKit.PDFDocument, quote: GeneratedQuote, accentColor: string, currency: string = 'MXN') {
+    doc.moveDown(1.2);
+    this.ensureSpace(doc, 80);
     const cfg = getAppConfig();
     const tax = Number.isFinite(quote.tax) ? (quote.tax as number) : Math.round(quote.subtotal * (cfg.defaultTaxPercent / 100));
     const total = Number.isFinite(quote.total) ? (quote.total as number) : Math.round(quote.subtotal + tax);
+    const taxLabel = currency === 'EUR' ? 'IVA (21%)' : currency === 'USD' ? 'Tax' : `IVA (${cfg.defaultTaxPercent}%)`;
+    const rightX = doc.page.width - doc.page.margins.right;
 
     doc.fontSize(12)
        .fillColor('#1f2937')
-       .text('Subtotal:', 400, startY)
-       .text(`${this.formatMoney(quote.subtotal)}`, 480, startY)
-       .text(`IVA (${cfg.defaultTaxPercent}%):`, 400, startY + 20)
-       .text(`${this.formatMoney(tax)}`, 480, startY + 20)
-       .fontSize(14)
+       .text('Subtotal:', rightX - 150, doc.y, { width: 80, align: 'right' })
+       .text(`${this.formatMoney(quote.subtotal, currency)}`, rightX - 60, doc.y - 12, { width: 60, align: 'right' });
+    doc.moveDown(0.2);
+    doc.text(`${taxLabel}:`, rightX - 150, doc.y, { width: 80, align: 'right' })
+       .text(`${this.formatMoney(tax, currency)}`, rightX - 60, doc.y - 12, { width: 60, align: 'right' });
+    doc.moveDown(0.4);
+    doc.fontSize(14)
        .fillColor(accentColor)
-       .text('TOTAL:', 400, startY + 45)
-       .text(`${this.formatMoney(total)}`, 480, startY + 45);
+       .text('TOTAL:', rightX - 150, doc.y, { width: 80, align: 'right' })
+       .text(`${this.formatMoney(total, currency)}`, rightX - 60, doc.y - 14, { width: 60, align: 'right' });
   }
 
   /**
@@ -257,16 +278,22 @@ export class PDFGenerator {
    * Añade términos y condiciones
    */
   private static addTerms(doc: PDFKit.PDFDocument, quote: GeneratedQuote, color: string) {
-    const startY = 320 + (quote.items.length * 30) + 100;
-    
+    doc.moveDown(1.2);
+    this.ensureSpace(doc, 40 + quote.terms.length * 14);
     doc.fontSize(12)
        .fillColor('#1f2937')
-       .text('Términos y Condiciones', 50, startY)
-       .fontSize(10)
+       .text('Términos y Condiciones');
+    doc.moveDown(0.4);
+    doc.fontSize(10)
        .fillColor(color);
 
-    quote.terms.forEach((term, index) => {
-      doc.text(`• ${term}`, 50, startY + 25 + (index * 15));
+    quote.terms.forEach((term) => {
+      this.ensureSpace(doc, 14);
+      doc.text(`• ${term}`, {
+        width: doc.page.width - doc.page.margins.left - doc.page.margins.right,
+        align: 'left'
+      });
+      doc.moveDown(0.2);
     });
   }
 
@@ -275,11 +302,18 @@ export class PDFGenerator {
    */
   private static addFooter(doc: PDFKit.PDFDocument, color: string) {
     const pageHeight = doc.page.height;
-    
+    const left = doc.page.margins.left;
     doc.fontSize(8)
        .fillColor('#64748b')
-       .text(`${getAppConfig().companyName} - Generador de Cotizaciones Profesionales`, 50, pageHeight - 30)
-        .text('www.autoquote.com | contacto@autoquote.com | Moneda: MXN', 50, pageHeight - 20);
+       .text(`${getAppConfig().companyName} - Generador de Cotizaciones Profesionales`, left, pageHeight - 30)
+       .text('www.autoquote.com | contacto@autoquote.com', left, pageHeight - 20);
+  }
+  private static ensureSpace(doc: PDFKit.PDFDocument, required: number) {
+    const available = doc.page.height - doc.page.margins.bottom;
+    if (doc.y + required > available) {
+      doc.addPage();
+      doc.moveDown(0.5);
+    }
   }
 
   /**

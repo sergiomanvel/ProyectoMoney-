@@ -18,47 +18,55 @@ const PORT = process.env.PORT || 8080;
 // Railway puede usar DATABASE_PUBLIC_URL, DATABASE_URL o variables individuales
 let poolConfig: any = {};
 
-// Detectar si DATABASE_PUBLIC_URL contiene URL interna (no funciona desde contenedores)
 const dbPublicUrl = process.env.DATABASE_PUBLIC_URL;
 const dbUrl = process.env.DATABASE_URL;
-const isInternalUrl = dbPublicUrl?.includes('railway.internal') || dbUrl?.includes('railway.internal');
+const rawDbSsl = (process.env.DB_SSL || '').toLowerCase();
+const forceSSL = rawDbSsl === 'true';
+const disableSSL = rawDbSsl === 'false';
 
-if (isInternalUrl) {
-  console.log('⚠️  Detectada URL interna de Railway. Usando variables individuales o construyendo URL pública.');
-}
+const shouldUseSSL = (host?: string) => {
+  const normalizedHost = (host || '').toLowerCase();
+  if (forceSSL) return true;
+  if (disableSSL) return false;
+  const isInternalHost = normalizedHost.includes('.railway.internal') || normalizedHost.includes('.internal');
+  return !isInternalHost;
+};
 
-if (dbPublicUrl && !isInternalUrl) {
-  // Railway usa DATABASE_PUBLIC_URL (URL pública - recomendado)
-  console.log('📊 Usando DATABASE_PUBLIC_URL para conectar a PostgreSQL');
-  poolConfig = {
-    connectionString: dbPublicUrl,
-    ssl: {
-      rejectUnauthorized: false
-    }
+const buildPoolConfigFromUrl = (label: 'DATABASE_PUBLIC_URL' | 'DATABASE_URL', value: string) => {
+  let host: string | undefined;
+  try {
+    host = new URL(value).hostname;
+  } catch {
+    host = undefined;
+  }
+  const useSSL = shouldUseSSL(host);
+  console.log(`📊 Usando ${label} para conectar a PostgreSQL (${host ?? 'host desconocido'})`);
+  console.log(`🔒 SSL requerido: ${useSSL}`);
+  return {
+    connectionString: value,
+    ssl: useSSL ? { rejectUnauthorized: false } : false
   };
-} else if (dbUrl && !isInternalUrl) {
-  // Railway usa DATABASE_URL (URL pública)
-  console.log('📊 Usando DATABASE_URL para conectar a PostgreSQL');
-  poolConfig = {
-    connectionString: dbUrl,
-    ssl: {
-      rejectUnauthorized: false
-    }
-  };
+};
+
+if (dbPublicUrl) {
+  poolConfig = buildPoolConfigFromUrl('DATABASE_PUBLIC_URL', dbPublicUrl);
+} else if (dbUrl) {
+  poolConfig = buildPoolConfigFromUrl('DATABASE_URL', dbUrl);
 } else {
   // Variables individuales
-  const useSSL = process.env.NODE_ENV === 'production' || process.env.DB_HOST?.includes('railway') || process.env.DB_HOST?.includes('rlwy');
-  console.log(`📊 Conectando a PostgreSQL: ${process.env.DB_HOST}:${process.env.DB_PORT}/${process.env.DB_NAME}`);
+  const dbHost = process.env.DB_HOST || process.env.PGHOST || 'localhost';
+  const useSSL = shouldUseSSL(dbHost);
+
+  console.log(`📊 Conectando a PostgreSQL: ${dbHost}:${process.env.DB_PORT}/${process.env.DB_NAME}`);
   console.log(`🔒 SSL requerido: ${useSSL}`);
+
   poolConfig = {
-    host: process.env.DB_HOST || 'localhost',
+    host: dbHost,
     port: parseInt(process.env.DB_PORT || '5432'),
     database: process.env.DB_NAME || 'autoquote',
     user: process.env.DB_USER || 'postgres',
     password: process.env.DB_PASS || '',
-    ssl: useSSL ? {
-      rejectUnauthorized: false
-    } : false
+    ssl: useSSL ? { rejectUnauthorized: false } : false
   };
 }
 
@@ -70,9 +78,17 @@ pool.on('error', (err, client) => {
 });
 
 // Trust proxy condicional (solo si detrás de proxy conocido)
-const enableTrustProxy = String(process.env.TRUST_PROXY || '').toLowerCase() === 'true';
-if (enableTrustProxy) {
-  app.set('trust proxy', true);
+const rawTrustProxy = process.env.TRUST_PROXY?.trim();
+let trustProxyEnabled = false;
+if (rawTrustProxy) {
+  trustProxyEnabled = true;
+  if (/^\d+$/.test(rawTrustProxy)) {
+    app.set('trust proxy', parseInt(rawTrustProxy, 10));
+  } else if (rawTrustProxy.toLowerCase() === 'true') {
+    app.set('trust proxy', 1);
+  } else {
+    app.set('trust proxy', rawTrustProxy);
+  }
 }
 
 // Middleware de seguridad
@@ -86,10 +102,10 @@ const limiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   validate: {
-    trustProxy: enableTrustProxy // Usar trust proxy si está habilitado
+    trustProxy: trustProxyEnabled // Usar trust proxy si está habilitado
   },
   // Si trust proxy está activo, usar X-Forwarded-For para obtener IP real
-  ...(enableTrustProxy ? {
+  ...(trustProxyEnabled ? {
     skip: (req) => {
       // Ignorar health checks en rate limit si se desea
       return req.path === '/health';

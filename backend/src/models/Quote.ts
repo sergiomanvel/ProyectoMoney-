@@ -37,6 +37,7 @@ export interface GeneratedQuote {
   deliverables?: string[];
   timeline?: string[];
   fluctuationWarning?: string;
+  currency?: string; // Código de moneda (MXN, EUR, USD, etc.)
   meta?: {
     aestheticAdjusted?: boolean;
     generatedBy?: string;
@@ -54,6 +55,7 @@ export interface GeneratedQuote {
     estimateDetail?: {
       scale?: string;
       baseTotal?: number;
+      baseTotalBeforeAdjustments?: number;
       appliedMultipliers?: {
         inflation?: number;
         marketLocation?: number;
@@ -69,6 +71,47 @@ export interface GeneratedQuote {
       clientProfile?: string;
       projectType?: string;
       region?: string;
+      rangeValidation?: {
+        passed: boolean;
+        adjusted: boolean;
+        original?: number;
+        range: { min: number; max: number };
+        reason?: string;
+        source?: string;
+      };
+      sectorKey?: string;
+      priceScale?: 'small' | 'standard' | 'enterprise';
+      baseRange?: { min: number; max: number };
+      baseRangeSource?: string;
+      adjustmentsSummary?: {
+        qualityMultiplier?: number;
+        locationMultiplier?: number;
+        urgencyMultiplier?: number;
+        clientProfileMultiplier?: number;
+        projectTypeMultiplier?: number;
+      };
+      blendDetails?: {
+        contributions?: Record<string, number>;
+        weights?: Record<string, number>;
+        clamped?: boolean;
+        range?: { min: number; max: number };
+      };
+      pricingBreakdown?: {
+        baseTotal: number;
+        baseSource: 'ticketRange' | 'priceRange' | 'historical' | 'spainData' | 'internal';
+        adjustments: Record<string, any>;
+        validations: {
+          minPriceApplied?: { original: number; adjusted: number; reason: string };
+          maxPriceApplied?: { original: number; adjusted: number; reason: string };
+          rangeValidation: { passed: boolean; range: { min: number; max: number }; adjusted?: boolean; reason?: string };
+        };
+        finalTotal: number;
+        calculationMethod: 'internal' | 'hybrid' | 'spainData' | 'external';
+        confidence: 'high' | 'medium' | 'low';
+        currency: string;
+        rangeReference?: { min: number; max: number; source: string; sectorKey?: string; scale?: string };
+      };
+      pricingExplanation?: string; // Explicación legible del precio
     };
     debug?: {
       traceId?: string;

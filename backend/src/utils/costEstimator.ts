@@ -1,5 +1,14 @@
 import { ProjectScale, SectorCostProfile, sectorCostProfiles, getDefaultMarketAdjustment } from '../config/sectorCostProfiles';
 import type { ProjectContext } from './contextAnalyzer';
+import {
+  BASE_TICKET_RANGES_ES,
+  SectorKey,
+  TicketRange,
+  TicketScale,
+  getBaseTicketRange,
+  normalizePriceScaleInput,
+  resolveSectorKey
+} from '../config/spainPricingData';
 
 interface CostEstimateInput {
   sector: string;
@@ -14,6 +23,7 @@ interface CostEstimateInput {
 export interface CostEstimateResult {
   targetTotal: number;
   baseTotal: number;
+  baseTotalBeforeAdjustments?: number;
   appliedMultipliers: {
     inflation?: number;
     marketLocation?: number;
@@ -29,53 +39,81 @@ export interface CostEstimateResult {
   clientProfile?: string;
   projectType?: string;
   region?: string;
-}
-
-function parsePriceRange(priceRange?: string): number | undefined {
-  if (!priceRange) return undefined;
-  const numbers = priceRange.match(/[\d.]+/g);
-  if (!numbers || numbers.length === 0) return undefined;
-  if (numbers.length === 1) return parseFloat(numbers[0].replace(/,/g, '')) * 1000;
-
-  const min = parseFloat(numbers[0].replace(/,/g, '')) * 1000;
-  const max = parseFloat(numbers[numbers.length - 1].replace(/,/g, '')) * 1000;
-  if (!Number.isFinite(min) || !Number.isFinite(max)) return undefined;
-  return Math.round((min + max) / 2);
-}
-
-function pickScale(profile: SectorCostProfile, target?: number): ProjectScale {
-  if (!target) return profile.defaultScale;
-
-  if (target <= profile.ticketRanges.small.max) return 'small';
-  if (target >= profile.ticketRanges.enterprise.min) return 'enterprise';
-  return 'standard';
+  rangeValidation?: {
+    passed: boolean;
+    adjusted: boolean;
+    original?: number;
+    range: { min: number; max: number };
+    reason?: string;
+    source?: string;
+  };
+  sectorKey?: SectorKey;
+  priceScale?: TicketScale;
+  baseRange?: TicketRange;
+  baseRangeSource?: 'spain_base_ticket' | 'sector_profile';
 }
 
 function midpoint(range: { min: number; max: number }): number {
   return Math.round((range.min + range.max) / 2);
 }
 
+function inferScaleFromNumericRange(priceRange: string | undefined, sectorKey: SectorKey): TicketScale | undefined {
+  if (!priceRange) return undefined;
+  const matches = priceRange.match(/[\d.,]+/g);
+  if (!matches || matches.length === 0) return undefined;
+  const values = matches
+    .map(value => parseFloat(value.replace(/[^\d.-]/g, '').replace(',', '.')))
+    .filter(val => Number.isFinite(val));
+  if (values.length === 0) return undefined;
+  const average = values.reduce((sum, value) => sum + value, 0) / values.length;
+  const config = BASE_TICKET_RANGES_ES[sectorKey];
+  if (!config) return undefined;
+
+  const scales: TicketScale[] = ['small', 'standard', 'enterprise'];
+  for (const scale of scales) {
+    const range = config[scale];
+    if (average >= range.min && average <= range.max) {
+      return scale;
+    }
+  }
+
+  // Si no cae dentro de un rango exacto, elegir el más cercano
+  let closest: { scale: TicketScale; diff: number } | null = null;
+  for (const scale of scales) {
+    const range = config[scale];
+    const diff = average < range.min ? range.min - average : average - range.max;
+    if (closest === null || diff < closest.diff) {
+      closest = { scale, diff };
+    }
+  }
+  return closest?.scale;
+}
+
 export function estimateProjectCost({ sector, priceRange, archContext, context, clientProfile, projectType, region }: CostEstimateInput): CostEstimateResult {
   const normalizedSector = sector?.toLowerCase() || 'general';
+  const sectorKey = resolveSectorKey(normalizedSector);
   const profile =
     (archContext?.isArchitecture ? sectorCostProfiles['construccion'] : sectorCostProfiles[normalizedSector]) ??
     sectorCostProfiles['general'];
 
-  const manualTarget = parsePriceRange(priceRange);
-  if (priceRange && priceRange.trim().length > 0 && manualTarget === undefined) {
-    throw new Error('INVALID_PRICE_RANGE');
-  }
-  let scale = pickScale(profile, manualTarget);
+  const desiredScale = normalizePriceScaleInput(priceRange) || inferScaleFromNumericRange(priceRange, sectorKey);
+  let scale: ProjectScale = desiredScale ?? profile.defaultScale;
 
   if (context?.scaleOverride) {
     scale = context.scaleOverride;
   }
 
-  let baseTotal = manualTarget ?? midpoint(profile.ticketRanges[scale]);
-
-  if (!manualTarget && context?.scaleOverride) {
-    baseTotal = midpoint(profile.ticketRanges[context.scaleOverride]);
+  let baseRange: TicketRange | undefined = BASE_TICKET_RANGES_ES[sectorKey]?.[scale] ?? profile.ticketRanges[scale];
+  if (!baseRange) {
+    baseRange = BASE_TICKET_RANGES_ES[sectorKey]?.standard ?? profile.ticketRanges[profile.defaultScale];
+    scale = profile.defaultScale;
   }
+  const baseRangeSource: 'spain_base_ticket' | 'sector_profile' =
+    BASE_TICKET_RANGES_ES[sectorKey]?.[scale] ? 'spain_base_ticket' : 'sector_profile';
+
+  const baseTotalBeforeMultipliers = baseRange ? midpoint(baseRange) : midpoint(profile.ticketRanges[scale]);
+  const baseTotalBeforeAdjustments = Math.round(baseTotalBeforeMultipliers);
+  let baseTotal = baseTotalBeforeAdjustments;
 
   const adjustment = getDefaultMarketAdjustment();
   const inflationMultiplier = adjustment.inflationIndex ?? 1;
@@ -199,15 +237,82 @@ export function estimateProjectCost({ sector, priceRange, archContext, context, 
     appliedMultipliers.timeline = timelineMultiplier;
   }
 
+  const finalTargetTotal = Math.round(adjustedTotal);
+  
+  // Validar que el precio final esté dentro del rango del sector
+  const validatedTotal = validatePriceRange(finalTargetTotal, scale, profile, normalizedSector, baseRange);
+
   return {
-    targetTotal: Math.round(adjustedTotal),
+    targetTotal: validatedTotal.total,
     baseTotal: Math.round(baseTotal),
+    baseTotalBeforeAdjustments,
     appliedMultipliers,
     scale,
     profile,
     clientProfile: finalClientProfile,
     projectType: finalProjectType,
-    region: finalRegion || context?.region
+    region: finalRegion || context?.region,
+    rangeValidation: validatedTotal.validation,
+    sectorKey,
+    priceScale: desiredScale,
+    baseRange,
+    baseRangeSource
+  };
+}
+
+/**
+ * Valida que el precio final esté dentro del rango del sector.
+ * Ajusta automáticamente si está fuera del rango y registra la validación.
+ */
+export function validatePriceRange(
+  finalPrice: number,
+  scale: ProjectScale,
+  profile: SectorCostProfile,
+  sector: string,
+  customRange?: TicketRange
+): {
+  total: number;
+  validation: {
+    passed: boolean;
+    adjusted: boolean;
+    original?: number;
+    range: { min: number; max: number };
+    reason?: string;
+    source?: string;
+  };
+} {
+  const range = customRange ?? profile.ticketRanges[scale];
+  const originalPrice = finalPrice;
+  let adjusted = false;
+  let reason: string | undefined;
+  let validatedPrice = finalPrice;
+
+  // Si está por debajo del mínimo, ajustar al mínimo
+  if (finalPrice < range.min) {
+    validatedPrice = range.min;
+    adjusted = true;
+    reason = `Precio ${finalPrice} por debajo del mínimo ${range.min} para sector ${sector} (${scale})`;
+    console.warn(`⚠️ [validatePriceRange] ${reason}`);
+  }
+  
+  // Si está por encima del máximo, ajustar al máximo
+  if (finalPrice > range.max) {
+    validatedPrice = range.max;
+    adjusted = true;
+    reason = `Precio ${finalPrice} por encima del máximo ${range.max} para sector ${sector} (${scale})`;
+    console.warn(`⚠️ [validatePriceRange] ${reason}`);
+  }
+
+  return {
+    total: validatedPrice,
+    validation: {
+      passed: !adjusted,
+      adjusted,
+      original: adjusted ? originalPrice : undefined,
+      range: { min: range.min, max: range.max },
+      reason: adjusted ? reason : undefined,
+      source: customRange ? 'spain_base_ticket' : 'sector_profile'
+    }
   };
 }
 

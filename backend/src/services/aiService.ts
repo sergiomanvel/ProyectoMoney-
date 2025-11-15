@@ -17,6 +17,8 @@ import { estimateProjectCost, CostEstimateResult } from '../utils/costEstimator'
 import { analyzeProjectContext, ProjectContext } from '../utils/contextAnalyzer';
 import { QuoteHistoryService, PriceSuggestionResult } from './quoteHistoryService';
 import { randomUUID } from 'crypto';
+import { detectCurrency } from '../utils/currencyDetector';
+import { buildPricingBreakdown, buildPricingExplanation } from '../utils/pricingExplainer';
 
 export type QualityLevel = 'basico' | 'estandar' | 'premium';
 
@@ -875,33 +877,96 @@ IMPORTANTE:
     }
   }
 
+  /**
+   * Combina el precio base calculado con el histórico del usuario aplicando
+   * los pesos definidos para cada criterio (sector, histórico, ubicación, etc.).
+   */
   private static blendHistoricTotal(
-    baseTotal: number,
+    costEstimate: CostEstimateResult,
     suggestion?: PriceSuggestionResult,
-    traceId?: string
-  ): { total: number; note?: string } {
+    options: { traceId?: string; qualityMultiplier?: number } = {}
+  ): {
+    total: number;
+    note?: string;
+    blendDetails?: {
+      contributions: Record<string, number>;
+      weights: Record<string, number>;
+      clamped?: boolean;
+      range?: { min: number; max: number };
+    };
+  } {
+    const { traceId, qualityMultiplier = 1 } = options;
     const prefix = traceId ? `[quote:${traceId}]` : undefined;
-    if (!suggestion || !suggestion.suggestedAverage || !Number.isFinite(suggestion.suggestedAverage)) {
-      if (prefix) {
-        console.debug(`${prefix} 🔢 Sin historial suficiente, se usa total base`, { baseTotal });
-      }
-      return { total: baseTotal };
+
+    const baseValue = costEstimate.baseTotalBeforeAdjustments ?? costEstimate.baseTotal;
+    const historicValue = suggestion?.suggestedAverage ?? baseValue;
+    const locationMultiplier =
+      costEstimate.appliedMultipliers.region ??
+      costEstimate.appliedMultipliers.location ??
+      1;
+    const urgencyMultiplier = costEstimate.appliedMultipliers.urgency ?? 1;
+    const clientMultiplier = costEstimate.appliedMultipliers.clientProfile ?? 1;
+    const projectTypeMultiplier = costEstimate.appliedMultipliers.projectType ?? 1;
+
+    const contributions: Record<string, number> = {
+      sector: baseValue,
+      historic: historicValue,
+      location: baseValue * locationMultiplier,
+      quality: baseValue * qualityMultiplier,
+      urgency: baseValue * urgencyMultiplier,
+      clientProfile: baseValue * clientMultiplier,
+      projectType: baseValue * projectTypeMultiplier
+    };
+
+    const weights: Record<string, number> = {
+      sector: 0.35,
+      historic: 0.25,
+      location: 0.15,
+      quality: 0.10,
+      urgency: 0.08,
+      clientProfile: 0.05,
+      projectType: 0.02
+    };
+
+    let blended = 0;
+    for (const [key, weight] of Object.entries(weights)) {
+      blended += (contributions[key] ?? baseValue) * weight;
     }
 
-    const suggested = suggestion.suggestedAverage;
-    const blended = Math.round((baseTotal * 0.6) + (suggested * 0.4));
-    const note = QuoteHistoryService.buildPricingNote(suggestion);
+    const note = suggestion ? QuoteHistoryService.buildPricingNote(suggestion) : undefined;
+
+    let clamped = false;
+    if (costEstimate.baseRange) {
+      if (blended < costEstimate.baseRange.min) {
+        blended = costEstimate.baseRange.min;
+        clamped = true;
+      } else if (blended > costEstimate.baseRange.max) {
+        blended = costEstimate.baseRange.max;
+        clamped = true;
+      }
+    }
+
     if (prefix) {
       console.debug(`${prefix} 🔁 Blend histórico aplicado`, {
-        baseTotal,
-        historicAverage: suggested,
-        blendedTotal: blended,
-        similarQuoteIds: suggestion.similarQuotes.map(entry => entry.id)
+        baseValue,
+        historicAverage: historicValue,
+        blendedTotal: Math.round(blended),
+        contributions,
+        weights,
+        range: costEstimate.baseRange,
+        similarQuoteIds: suggestion?.similarQuotes.map(entry => entry.id)
       });
     }
+
     return {
-      total: blended,
-      note
+      total: Math.round(blended),
+      note,
+      blendDetails: {
+        contributions,
+        weights,
+        clamped,
+        range: costEstimate.baseRange
+      }
     };
   }
 
@@ -1131,24 +1196,57 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
     const forbiddenWords = ['caca', 'zurullo', 'jajaja', 'xd', 'lol', 'troll', 'broma'];
     for (const item of raw.items) {
       const desc = item.description?.toLowerCase() || '';
+      const originalDesc = item.description || '';
       
-      // Verificar longitud
-      if (desc.length < 4) {
-        return { valid: false, reason: `Item con descripción muy corta: "${item.description}"` };
+      // Verificar longitud mínima (aumentada de 4 a 20 caracteres)
+      if (desc.length < 20) {
+        return { valid: false, reason: `Item con descripción muy corta (mínimo 20 caracteres): "${originalDesc}"` };
+      }
+
+      // Verificar longitud máxima (120 caracteres)
+      if (desc.length > 120) {
+        return { valid: false, reason: `Item con descripción muy larga (máximo 120 caracteres): "${originalDesc}"` };
       }
 
       // Verificar palabras prohibidas
       if (forbiddenWords.some(word => desc.includes(word))) {
-        return { valid: false, reason: `Item contiene palabra prohibida: "${item.description}"` };
+        return { valid: false, reason: `Item contiene palabra prohibida: "${originalDesc}"` };
       }
 
-      // Verificar repetición de palabras (máximo 3 repeticiones)
-      const words = desc.split(/\s+/);
+      // Verificar frases cortadas o incompletas (patrones comunes)
+      const incompletePatterns = [
+        /para de la/,           // "para de la estrategia"
+        /de para/,              // "de para la"
+        /configuración de para/, // "configuración de para"
+        /desarrollo de para/,   // "desarrollo de para"
+        /\bde\s+de\b/,          // "de de la"
+        /\bpara\s+para\b/,      // "para para"
+        /\bdel\s+del\b/,        // "del del"
+        /\s+para\s+de\s+la\s+/, // "para de la"
+      ];
+      
+      for (const pattern of incompletePatterns) {
+        if (pattern.test(desc)) {
+          return { valid: false, reason: `Item con frase cortada o repetitiva: "${originalDesc}"` };
+        }
+      }
+
+      // Verificar estructura completa (no debe terminar con preposiciones)
+      const endsWithPreposition = /\b(para|de|del|en|con|por|sobre|bajo|ante|entre|hacia|según|mediante|durante|tras)\s*$/i;
+      if (endsWithPreposition.test(originalDesc)) {
+        return { valid: false, reason: `Item termina con preposición (frase incompleta): "${originalDesc}"` };
+      }
+
+      // Verificar repetición de palabras (máximo 2 repeticiones para palabras no comunes)
+      const words = desc.split(/\s+/).filter((w: string) => w.length > 3); // Filtrar palabras de más de 3 caracteres
       const wordCount: Record<string, number> = {};
       for (const word of words) {
         wordCount[word] = (wordCount[word] || 0) + 1;
-        if (wordCount[word] > 3 && word.length > 3) {
-          return { valid: false, reason: `Item con palabras repetidas excesivamente: "${item.description}"` };
+        // Palabras comunes como "de", "la", "el" pueden repetirse más, pero otras no
+        const commonWords = ['de', 'la', 'el', 'en', 'con', 'por', 'para', 'del', 'las', 'los', 'una', 'un'];
+        const maxRepetitions = commonWords.includes(word) ? 4 : 2;
+        if (wordCount[word] > maxRepetitions) {
+          return { valid: false, reason: `Item con palabra "${word}" repetida excesivamente (${wordCount[word]} veces): "${originalDesc}"` };
         }
       }
     }
@@ -1236,7 +1334,12 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
     const costEstimate = adjustedCostEstimate
       ? { ...baseEstimate, ...adjustedCostEstimate }
       : baseEstimate;
-    const basePrice = Math.round(costEstimate.targetTotal * qualityConfig.priceMultiplier);
+    const blend = this.blendHistoricTotal(costEstimate, undefined, {
+      traceId: trace,
+      qualityMultiplier: qualityConfig.priceMultiplier
+    });
+    const targetTotal = blend.total || costEstimate.targetTotal;
+    const basePrice = Math.round(targetTotal * qualityConfig.priceMultiplier);
     const cfg = getAppConfig();
     const taxPercent = cfg.defaultTaxPercent / 100;
     
@@ -1308,6 +1411,9 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
     // Timeline de plazos
     const timeline = buildQuoteTimeline(sector, archContext);
 
+    // Detectar moneda según región
+    const currency = detectCurrency(projectContext.region, projectContext.locationHint);
+
     const fallbackQuote: GeneratedQuote = {
       title: professionalTitle,
       clientName,
@@ -1322,6 +1428,7 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
       sector: sector,
       timeline: timeline,
       fluctuationWarning: projectContext.fluctuationWarning,
+      currency, // Moneda detectada según región
       meta: {
         aestheticAdjusted: priceDistribution.aestheticAdjusted,
         generatedBy: 'template-fallback',
@@ -1330,15 +1437,43 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
       }
     };
 
+    // Construir desglose completo del precio (modo auditable)
+    const pricingCurrency = currency;
+    const pricingBreakdown = buildPricingBreakdown(
+      costEstimate,
+      undefined,
+      blend.blendDetails,
+      projectContext,
+      normalizedQuality,
+      pricingCurrency
+    );
+    const pricingExplanation = buildPricingExplanation(pricingBreakdown);
+
     const estimateDetail = {
       scale: costEstimate.scale,
       baseTotal: costEstimate.baseTotal,
+      baseTotalBeforeAdjustments: costEstimate.baseTotalBeforeAdjustments,
       appliedMultipliers: costEstimate.appliedMultipliers,
-      blendedHistoricTotal: costEstimate.targetTotal,
+      blendedHistoricTotal: targetTotal,
       fallbackUsed: true,
       clientProfile: projectContext.clientProfile,
       projectType: projectContext.projectType,
-      region: projectContext.region
+      region: projectContext.region,
+      rangeValidation: costEstimate.rangeValidation,
+      sectorKey: costEstimate.sectorKey,
+      priceScale: costEstimate.priceScale,
+      baseRange: costEstimate.baseRange,
+      baseRangeSource: costEstimate.baseRangeSource,
+      adjustmentsSummary: {
+        qualityMultiplier: qualityConfig.priceMultiplier,
+        locationMultiplier: costEstimate.appliedMultipliers.location ?? costEstimate.appliedMultipliers.region,
+        urgencyMultiplier: costEstimate.appliedMultipliers.urgency,
+        clientProfileMultiplier: costEstimate.appliedMultipliers.clientProfile,
+        projectTypeMultiplier: costEstimate.appliedMultipliers.projectType
+      },
+      blendDetails: blend.blendDetails,
+      pricingBreakdown,
+      pricingExplanation
     };
 
     const distributionInfo = {
@@ -1770,7 +1905,10 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
     console.timeEnd(label('estimateProjectCost'));
     debugInfo.timings.estimateProjectCost = performance.now() - estimateStart;
     const blendStart = performance.now();
-    const blend = this.blendHistoricTotal(costEstimate.targetTotal, priceSuggestion, trace);
+    const blend = this.blendHistoricTotal(costEstimate, priceSuggestion, {
+      traceId: trace,
+      qualityMultiplier: qualityConfig.priceMultiplier
+    });
     debugInfo.timings.blendHistoricTotal = performance.now() - blendStart;
     
     // Distribuir precios si faltan
@@ -1924,28 +2062,28 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
       commercialSummary = await generateCommercialSummary(
         projectDescription,
         clientName,
-        total,
+      total,
         undefined,
         archContext,
         { traceId: trace, onFallback: () => { debugInfo.flags.usedLocalSummary = true; debugInfo.flags.usedFallback = true; } }
       );
       debugInfo.timings.generateCommercialSummary = performance.now() - summaryStart;
       generatedQuote = {
-        title: professionalTitle,
-        clientName,
-        projectDescription,
-        items: priceDistribution.items,
-        subtotal: priceDistribution.items.reduce((sum, item) => sum + item.total, 0),
-        tax: priceDistribution.items.reduce((sum, item) => sum + item.total, 0) * taxPercent,
-        total: priceDistribution.items.reduce((sum, item) => sum + item.total, 0) * (1 + taxPercent),
+      title: professionalTitle,
+      clientName,
+      projectDescription,
+      items: priceDistribution.items,
+      subtotal: priceDistribution.items.reduce((sum, item) => sum + item.total, 0),
+      tax: priceDistribution.items.reduce((sum, item) => sum + item.total, 0) * taxPercent,
+      total: priceDistribution.items.reduce((sum, item) => sum + item.total, 0) * (1 + taxPercent),
         validUntil,
-        terms: professionalTerms,
-        summary: commercialSummary,
+      terms: professionalTerms,
+      summary: commercialSummary,
         sector,
         timeline,
         fluctuationWarning: projectContext.fluctuationWarning,
-        meta: {
-          aestheticAdjusted: priceDistribution.aestheticAdjusted,
+      meta: {
+        aestheticAdjusted: priceDistribution.aestheticAdjusted,
           generatedBy,
           projectContext,
           qualityLevel: normalizedQuality
@@ -1959,15 +2097,43 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
       debugInfo.flags.usedFallback
     );
 
+    // Construir desglose completo del precio (modo auditable)
+    const currency = detectCurrency(projectContext.region, projectContext.locationHint);
+    const pricingBreakdown = buildPricingBreakdown(
+      costEstimate,
+      priceSuggestion,
+      blend.blendDetails,
+      projectContext,
+      normalizedQuality,
+      currency
+    );
+    const pricingExplanation = buildPricingExplanation(pricingBreakdown);
+
     const estimateDetail = {
       scale: costEstimate.scale,
       baseTotal: costEstimate.baseTotal,
+      baseTotalBeforeAdjustments: costEstimate.baseTotalBeforeAdjustments,
       appliedMultipliers: costEstimate.appliedMultipliers,
       blendedHistoricTotal: blend.total,
       fallbackUsed,
       clientProfile: projectContext.clientProfile,
       projectType: projectContext.projectType,
-      region: projectContext.region
+      region: projectContext.region,
+      rangeValidation: costEstimate.rangeValidation,
+      sectorKey: costEstimate.sectorKey,
+      priceScale: costEstimate.priceScale,
+      baseRange: costEstimate.baseRange,
+      baseRangeSource: costEstimate.baseRangeSource,
+      adjustmentsSummary: {
+        qualityMultiplier: qualityConfig.priceMultiplier,
+        locationMultiplier: costEstimate.appliedMultipliers.location ?? costEstimate.appliedMultipliers.region,
+        urgencyMultiplier: costEstimate.appliedMultipliers.urgency,
+        clientProfileMultiplier: costEstimate.appliedMultipliers.clientProfile,
+        projectTypeMultiplier: costEstimate.appliedMultipliers.projectType
+      },
+      blendDetails: blend.blendDetails,
+      pricingBreakdown,
+      pricingExplanation
     };
 
     const debugMeta = {
@@ -2074,10 +2240,13 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
     });
     const blendStart = performance.now();
     console.time(label('blendHistoricTotal'));
-    const blend = this.blendHistoricTotal(costEstimate.targetTotal, priceSuggestion, trace);
+    const blend = this.blendHistoricTotal(costEstimate, priceSuggestion, {
+      traceId: trace,
+      qualityMultiplier: qualityConfig.priceMultiplier
+    });
     console.timeEnd(label('blendHistoricTotal'));
     debugInfo.timings.blendHistoricTotal = performance.now() - blendStart;
-    const targetTotal = blend.total;
+    const targetTotal = blend.total || costEstimate.targetTotal;
     const effectivePricingNote = pricingNote || blend.note;
     const adjustedCostEstimate = {
       ...costEstimate,
@@ -2106,10 +2275,10 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
     console.time(contextualizeLabel);
     const contextualizeStart = performance.now();
     let contextualizedItems = await this.contextualizeItemsWithOpenAI(
-      openai,
-      projectDescription,
-      sector,
-      baseConcepts,
+        openai,
+        projectDescription,
+        sector,
+        baseConcepts,
       archContext,
       qualityConfig,
       historySnippets,
@@ -2201,6 +2370,9 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
     }
     const timeline = buildQuoteTimeline(sector, archContext);
     
+    // Detectar moneda según región
+    const quoteCurrency = detectCurrency(projectContext.region, projectContext.locationHint);
+    
     const generatedQuote: GeneratedQuote = {
       title: professionalTitle,
       clientName,
@@ -2215,6 +2387,7 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
       sector: sector,
       timeline,
       fluctuationWarning: projectContext.fluctuationWarning,
+      currency: quoteCurrency, // Moneda detectada según región
       meta: {
         aestheticAdjusted: priceDistribution.aestheticAdjusted,
         generatedBy: 'ai-template',
@@ -2229,15 +2402,43 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
       debugInfo.flags.usedFallback
     );
 
+    // Construir desglose completo del precio (modo auditable)
+    const pricingCurrency = detectCurrency(projectContext.region, projectContext.locationHint);
+    const pricingBreakdown = buildPricingBreakdown(
+      costEstimate,
+      priceSuggestion,
+      blend.blendDetails,
+      projectContext,
+      normalizedQuality,
+      pricingCurrency
+    );
+    const pricingExplanation = buildPricingExplanation(pricingBreakdown);
+
     const estimateDetail = {
       scale: costEstimate.scale,
       baseTotal: costEstimate.baseTotal,
+      baseTotalBeforeAdjustments: costEstimate.baseTotalBeforeAdjustments,
       appliedMultipliers: costEstimate.appliedMultipliers,
       blendedHistoricTotal: blend.total,
       fallbackUsed,
       clientProfile: projectContext.clientProfile,
       projectType: projectContext.projectType,
-      region: projectContext.region
+      region: projectContext.region,
+      sectorKey: costEstimate.sectorKey,
+      priceScale: costEstimate.priceScale,
+      baseRange: costEstimate.baseRange,
+      baseRangeSource: costEstimate.baseRangeSource,
+      adjustmentsSummary: {
+        qualityMultiplier: qualityConfig.priceMultiplier,
+        locationMultiplier: costEstimate.appliedMultipliers.location ?? costEstimate.appliedMultipliers.region,
+        urgencyMultiplier: costEstimate.appliedMultipliers.urgency,
+        clientProfileMultiplier: costEstimate.appliedMultipliers.clientProfile,
+        projectTypeMultiplier: costEstimate.appliedMultipliers.projectType
+      },
+      blendDetails: blend.blendDetails,
+      rangeValidation: costEstimate.rangeValidation,
+      pricingBreakdown,
+      pricingExplanation
     };
 
     const debugMeta = {
@@ -2355,21 +2556,57 @@ ${sectorContextBlock}
 CONCEPTOS BASE A CONTEXTUALIZAR:
 ${baseConcepts.map((c, i) => `${i + 1}. ${c}`).join('\n')}
 
+REGLAS ESTRICTAS DE CALIDAD:
+1. ESTRUCTURA COMPLETA: Cada concepto debe tener estructura completa (sujeto + verbo + acción concreta)
+   - ✅ CORRECTO: "Desarrollo de backend y API REST para sistema de gestión"
+   - ❌ INCORRECTO: "Desarrollo de backend para de la estrategia" (frase cortada)
+   - ❌ INCORRECTO: "Configuración de para de la estrategia" (repetitivo e incompleto)
+
+2. SIN REPETICIONES: No repitas palabras innecesariamente
+   - ✅ CORRECTO: "Gestión de campañas en redes sociales y métricas de rendimiento"
+   - ❌ INCORRECTO: "Configuración de campañas para de la estrategia en redes sociales para de la estrategia"
+
+3. DESCRIPCIONES ÚNICAS: Cada concepto debe ser diferente y específico
+   - ✅ CORRECTO: "Diseño de interfaz de usuario y experiencia (UI/UX)"
+   - ✅ CORRECTO: "Implementación de funcionalidades de autenticación y seguridad"
+   - ❌ INCORRECTO: Dos conceptos idénticos o casi idénticos
+
+4. VOCABULARIO PROFESIONAL: Usa términos técnicos y profesionales del sector
+   - Si es médico → menciona pacientes, citas, historial clínico, expediente médico
+   - Si es marketing → menciona contenidos, publicaciones, métricas, KPIs, redes sociales, conversiones
+   - Si es construcción → menciona suministro, mano de obra, instalación, puesta en marcha, certificaciones
+   - Si es software → menciona análisis, desarrollo, pruebas, integración, despliegue, CI/CD, API
+   - Si es ecommerce → menciona catálogo, pasarelas de pago, logística, fulfillment, conversiones
+   - Si es eventos → menciona producción, montaje, operación, hospitality, streaming
+   - Si es comercio → menciona punto de venta, inventario, fidelización, visual merchandising
+   - Si es manufactura → menciona producción, calidad, trazabilidad, MES, IoT
+   - Si es formación → menciona contenido, plataforma LMS, evaluación, certificación
+
+5. SIN MEZCLA DE IDIOMAS: Escribe completamente en español, evita términos anglos innecesarios
+   - ✅ CORRECTO: "Sistema de gestión de relaciones con clientes (CRM)"
+   - ❌ INCORRECTO: "Setup de CRM para tracking de leads"
+
+6. LONGITUD ADECUADA: Cada concepto debe tener entre 40 y 120 caracteres
+   - ✅ CORRECTO: "Implementación de sistema de autenticación de dos factores y gestión de sesiones"
+   - ❌ INCORRECTO: "Auth" (demasiado corto)
+   - ❌ INCORRECTO: "Implementación completa de sistema de autenticación de dos factores con gestión de sesiones seguras y políticas de contraseñas robustas para garantizar la seguridad del sistema" (demasiado largo)
+
+7. NO COPIES LA DESCRIPCIÓN: Adapta los conceptos, no copies la descripción general del proyecto
+   - ✅ CORRECTO: "Configuración de tienda online en Shopify con catálogo de productos"
+   - ❌ INCORRECTO: Copiar literalmente partes de la descripción del proyecto
+
 IMPORTANTE:
 - Pautas de estilo (no copies literal, solo inspírate):
 ${sectorVoice}
 - Ajustes de calidad:
 ${qualityStyle || '- Mantén el nivel estándar indicado.'}
-- Adapta cada concepto al proyecto específico
+- Adapta cada concepto al proyecto específico usando palabras clave de la descripción
 - Usa vocabulario profesional del sector
-- Si es médico → menciona pacientes, citas, historial clínico
-- Si es marketing → menciona contenidos, publicaciones, métricas, redes sociales
-- Si es construcción → menciona suministro, mano de obra, instalación, puesta en marcha
-- Si es software → menciona análisis, desarrollo, pruebas, integración, despliegue
 - NO inventes servicios absurdos ni coloquiales
+- Verifica que cada concepto tenga sentido completo y no esté cortado
 
-DEVUELVE SOLO JSON con este array:
-["Concepto 1 adaptado", "Concepto 2 adaptado", ...]`;
+DEVUELVE SOLO JSON con este array de conceptos completos y profesionales:
+["Concepto 1 adaptado completo", "Concepto 2 adaptado completo", ...]`;
     }
     console.timeEnd(label('openai.contextualize.buildPrompt'));
 
@@ -2385,16 +2622,16 @@ DEVUELVE SOLO JSON con este array:
     try {
       const completion = await openai.chat.completions.create({
         model,
-        messages: [
-          {
-            role: "system",
+      messages: [
+        {
+          role: "system",
             content: `Eres un asistente experto en ${sector}. Devuelves únicamente JSON válido.`
-          },
-          {
-            role: "user",
-            content: prompt
-          }
-        ],
+        },
+        {
+          role: "user",
+          content: prompt
+        }
+      ],
         temperature,
         max_tokens: 700,
       });
@@ -2409,7 +2646,11 @@ DEVUELVE SOLO JSON con este array:
           completionTokens: completion.usage.completion_tokens
         });
       }
-      return parsed.map((description: string) => ({
+      
+      // Validar items generados por OpenAI
+      const validatedItems = this.validateAndFixItems(parsed, trace);
+      
+      return validatedItems.map((description: string) => ({
         description,
         quantity: 1,
         unitPrice: 0,
@@ -2481,26 +2722,57 @@ DEVUELVE SOLO JSON con este array:
           contextInfo = 'el proyecto arquitectónico';
         }
       } else {
-        // Para otros sectores
+        // Para otros sectores - mejorar para evitar frases cortadas
         if (desc.includes('clínica') || desc.includes('médica') || desc.includes('citas')) {
           contextInfo = 'del sistema de gestión de citas y pacientes';
-        } else if (desc.includes('instagram') || desc.includes('facebook') || desc.includes('redes')) {
+        } else if (desc.includes('instagram') || desc.includes('facebook') || desc.includes('redes') || desc.includes('social')) {
           contextInfo = 'de la estrategia en redes sociales';
-        } else if (desc.includes('tienda') || desc.includes('shopify') || desc.includes('ecommerce')) {
+        } else if (desc.includes('tienda') || desc.includes('shopify') || desc.includes('ecommerce') || desc.includes('tienda online')) {
           contextInfo = 'de la tienda online';
-        } else if (desc.includes('web') || desc.includes('sitio') || desc.includes('página')) {
+        } else if (desc.includes('web') || desc.includes('sitio') || desc.includes('página') || desc.includes('website')) {
           contextInfo = 'del sitio web';
-        } else if (desc.includes('app') || desc.includes('móvil')) {
+        } else if (desc.includes('app') || desc.includes('móvil') || desc.includes('aplicación')) {
           contextInfo = 'de la aplicación móvil';
-        } else if (desc.includes('reforma') || desc.includes('obra')) {
+        } else if (desc.includes('reforma') || desc.includes('obra') || desc.includes('construcción')) {
           contextInfo = 'de la obra';
+        } else if (desc.includes('evento') || desc.includes('eventos')) {
+          contextInfo = 'del evento';
+        } else if (desc.includes('comercio') || desc.includes('tienda física') || desc.includes('retail')) {
+          contextInfo = 'del punto de venta';
+        } else if (desc.includes('manufactura') || desc.includes('producción') || desc.includes('fabricación')) {
+          contextInfo = 'del proceso de producción';
+        } else if (desc.includes('formación') || desc.includes('capacitación') || desc.includes('curso')) {
+          contextInfo = 'del programa de formación';
+        } else if (desc.includes('consultoría') || desc.includes('consultoria') || desc.includes('asesoría')) {
+          contextInfo = 'del proyecto de consultoría';
         }
       }
       
+      // Validar que el prefijo no termine con "para" o "de" si ya hay contextInfo
+      // Esto evita frases como "Configuración de para de la estrategia"
       if (contextInfo) {
+        const prefixTrimmed = prefix.trim();
+        // Si el prefijo termina con "para" o "de", y el contextInfo empieza con "de" o "del", combinar correctamente
+        if (prefixTrimmed.endsWith(' para') || prefixTrimmed.endsWith(' de')) {
+          // Remover "para" o "de" del final del prefijo si el contextInfo ya tiene "de" o "del"
+          if (contextInfo.startsWith('de ') || contextInfo.startsWith('del ')) {
+            adapted = `${prefixTrimmed.replace(/\s+(para|de)$/, '')} ${contextInfo}`;
+          } else {
+            adapted = `${prefixTrimmed} ${contextInfo}`;
+          }
+        } else {
         adapted = `${prefix} ${contextInfo}`;
+        }
       } else {
         adapted = prefix;
+      }
+      
+      // Validar longitud mínima y estructura completa
+      if (adapted.length < 20) {
+        // Si es muy corto, añadir contexto adicional
+        if (!contextInfo) {
+          adapted = `${adapted} del proyecto`;
+        }
       }
       
       return {
@@ -2701,7 +2973,10 @@ IMPORTANTE: Respeta los conceptos definidos, solo enriquece título y términos.
       appliedMultipliers: costEstimate.appliedMultipliers,
       duration: Number(estimateDuration.toFixed(2))
     });
-    const blend = this.blendHistoricTotal(costEstimate.targetTotal, priceSuggestion, traceId);
+    const blend = this.blendHistoricTotal(costEstimate, priceSuggestion, {
+      traceId,
+      qualityMultiplier: qualityConfig.priceMultiplier
+    });
     const targetTotal = blend.total;
     const effectivePricingNote = pricingNote || blend.note;
     const adjustedCostEstimate = {
@@ -2726,6 +3001,9 @@ IMPORTANTE: Respeta los conceptos definidos, solo enriquece título y términos.
       const adjustedTotal = baseTotal * qualityConfig.priceMultiplier;
       const adjustedTax = adjustedTotal - adjustedSubtotal;
 
+      // Detectar moneda según región
+      const currency = detectCurrency(projectContext.region, projectContext.locationHint);
+      
       const fallbackQuote: GeneratedQuote = {
         title: `COTIZACIÓN - ${projectDescription.substring(0, 50)}`,
         clientName,
@@ -2742,6 +3020,7 @@ IMPORTANTE: Respeta los conceptos definidos, solo enriquece título y términos.
         validUntil: dayjs().add(30, 'day').format('YYYY-MM-DD'),
         terms: this.getDefaultTerms(),
         fluctuationWarning: projectContext.fluctuationWarning,
+        currency, // Moneda detectada según región
         meta: {
           qualityLevel: normalizedQuality,
           projectContext,
@@ -2756,13 +3035,43 @@ IMPORTANTE: Respeta los conceptos definidos, solo enriquece título y términos.
         clientProfile: projectContext.clientProfile,
         projectType: projectContext.projectType,
         region: projectContext.region,
-        estimateDetail: {
-          scale: costEstimate.scale,
-          baseTotal: costEstimate.baseTotal,
-          appliedMultipliers: costEstimate.appliedMultipliers,
-          blendedHistoricTotal: targetTotal,
-          fallbackUsed: true
-        },
+        estimateDetail: (() => {
+          const currency = detectCurrency(projectContext.region, projectContext.locationHint);
+          const pricingBreakdown = buildPricingBreakdown(
+            costEstimate,
+            priceSuggestion,
+            blend.blendDetails,
+            projectContext,
+            normalizedQuality,
+            currency
+          );
+          return {
+            scale: costEstimate.scale,
+            baseTotal: costEstimate.baseTotal,
+            baseTotalBeforeAdjustments: costEstimate.baseTotalBeforeAdjustments,
+            appliedMultipliers: costEstimate.appliedMultipliers,
+            blendedHistoricTotal: targetTotal,
+            fallbackUsed: true,
+            clientProfile: projectContext.clientProfile,
+            projectType: projectContext.projectType,
+            region: projectContext.region,
+            rangeValidation: costEstimate.rangeValidation,
+            sectorKey: costEstimate.sectorKey,
+            priceScale: costEstimate.priceScale,
+            baseRange: costEstimate.baseRange,
+            baseRangeSource: costEstimate.baseRangeSource,
+            adjustmentsSummary: {
+              qualityMultiplier: qualityConfig.priceMultiplier,
+              locationMultiplier: costEstimate.appliedMultipliers.location ?? costEstimate.appliedMultipliers.region,
+              urgencyMultiplier: costEstimate.appliedMultipliers.urgency,
+              clientProfileMultiplier: costEstimate.appliedMultipliers.clientProfile,
+              projectTypeMultiplier: costEstimate.appliedMultipliers.projectType
+            },
+            blendDetails: blend.blendDetails,
+            pricingBreakdown,
+            pricingExplanation: buildPricingExplanation(pricingBreakdown)
+          };
+        })(),
         debug: {
           traceId: trace,
           timings: this.formatTimings({
@@ -2789,6 +3098,164 @@ IMPORTANTE: Respeta los conceptos definidos, solo enriquece título y términos.
       effectivePricingNote,
       traceId
     );
+  }
+
+  /**
+   * Valida y corrige items generados por OpenAI
+   * Detecta y corrige frases cortadas, repetitivas o incompletas
+   */
+  private static validateAndFixItems(items: string[], traceId?: string): string[] {
+    const prefix = traceId ? `[quote:${traceId}]` : '';
+    const fixedItems: string[] = [];
+    
+    // Patrones de frases cortadas o repetitivas
+    const incompletePatterns = [
+      /para de la/i,           // "para de la estrategia"
+      /de para/i,              // "de para la"
+      /configuración de para/i, // "configuración de para"
+      /desarrollo de para/i,   // "desarrollo de para"
+      /\bde\s+de\b/i,          // "de de la"
+      /\bpara\s+para\b/i,      // "para para"
+      /\bdel\s+del\b/i,        // "del del"
+      /\s+para\s+de\s+la\s+/i, // "para de la"
+    ];
+    
+    for (let i = 0; i < items.length; i++) {
+      let item = items[i]?.trim() || '';
+      
+      if (!item || item.length === 0) {
+        if (prefix) {
+          console.warn(`${prefix} ⚠️ Item vacío en posición ${i}, omitiendo`);
+        }
+        continue;
+      }
+      
+      // Validar longitud mínima (20 caracteres)
+      if (item.length < 20) {
+        if (prefix) {
+          console.warn(`${prefix} ⚠️ Item muy corto (${item.length} caracteres): "${item}", expandiendo`);
+        }
+        // Intentar expandir añadiendo contexto
+        if (!item.includes('del') && !item.includes('de la')) {
+          item = `${item} del proyecto`;
+        } else {
+          item = `${item} completo`;
+        }
+      }
+      
+      // Validar longitud máxima (120 caracteres)
+      if (item.length > 120) {
+        if (prefix) {
+          console.warn(`${prefix} ⚠️ Item muy largo (${item.length} caracteres): "${item}", truncando`);
+        }
+        item = item.substring(0, 117) + '...';
+      }
+      
+      // Detectar y corregir frases cortadas o repetitivas
+      for (const pattern of incompletePatterns) {
+        if (pattern.test(item)) {
+          if (prefix) {
+            console.warn(`${prefix} ⚠️ Frase cortada o repetitiva detectada: "${item}", corrigiendo`);
+          }
+          // Corregir frases cortadas
+          item = item
+            .replace(/para de la/gi, 'para')
+            .replace(/de para/gi, 'para')
+            .replace(/configuración de para/gi, 'configuración')
+            .replace(/desarrollo de para/gi, 'desarrollo')
+            .replace(/\bde\s+de\b/gi, 'de')
+            .replace(/\bpara\s+para\b/gi, 'para')
+            .replace(/\bdel\s+del\b/gi, 'del')
+            .replace(/\s+para\s+de\s+la\s+/gi, ' ');
+        }
+      }
+      
+      // Detectar si termina con preposición (frase incompleta)
+      const endsWithPreposition = /\b(para|de|del|en|con|por|sobre|bajo|ante|entre|hacia|según|mediante|durante|tras)\s*$/i;
+      if (endsWithPreposition.test(item)) {
+        if (prefix) {
+          console.warn(`${prefix} ⚠️ Item termina con preposición: "${item}", corrigiendo`);
+        }
+        // Remover preposición final o añadir complemento
+        item = item.replace(/\s+(para|de|del|en|con|por|sobre|bajo|ante|entre|hacia|según|mediante|durante|tras)\s*$/i, '');
+        if (item.length < 20) {
+          item = `${item} del proyecto`;
+        }
+      }
+      
+      // Detectar repeticiones excesivas de palabras
+      const words = item.toLowerCase().split(/\s+/).filter(w => w.length > 3);
+      const wordCount: Record<string, number> = {};
+      for (const word of words) {
+        wordCount[word] = (wordCount[word] || 0) + 1;
+      }
+      
+      // Si hay palabras repetidas más de 2 veces (excepto palabras comunes), intentar corregir
+      const commonWords = ['de', 'la', 'el', 'en', 'con', 'por', 'para', 'del', 'las', 'los', 'una', 'un'];
+      for (const [word, count] of Object.entries(wordCount)) {
+        if (!commonWords.includes(word) && count > 2) {
+          if (prefix) {
+            console.warn(`${prefix} ⚠️ Palabra "${word}" repetida ${count} veces en: "${item}", simplificando`);
+          }
+          // Simplificar eliminando repeticiones innecesarias
+          const wordRegex = new RegExp(`\\b${word}\\b`, 'gi');
+          const matches = item.match(wordRegex);
+          if (matches && matches.length > 2) {
+            // Mantener solo las dos primeras ocurrencias
+            let occurrence = 0;
+            item = item.replace(wordRegex, (match) => {
+              occurrence++;
+              if (occurrence <= 2) {
+                return match;
+              }
+              return '';
+            });
+            // Limpiar espacios múltiples
+            item = item.replace(/\s+/g, ' ').trim();
+          }
+        }
+      }
+      
+      // Validar que la descripción no esté vacía después de las correcciones
+      if (item.trim().length < 20) {
+        if (prefix) {
+          console.warn(`${prefix} ⚠️ Item sigue siendo muy corto después de correcciones: "${item}", usando original`);
+        }
+        // Si después de las correcciones sigue siendo muy corto, usar el original o añadir contexto
+        item = items[i]?.trim() || '';
+        if (item.length < 20) {
+          item = `${item} del proyecto`;
+        }
+      }
+      
+      // Añadir a la lista de items validados
+      fixedItems.push(item.trim());
+    }
+    
+    // Validar que no haya items duplicados
+    const uniqueItems = new Set<string>();
+    const finalItems: string[] = [];
+    for (const item of fixedItems) {
+      const normalized = item.toLowerCase().trim();
+      if (!uniqueItems.has(normalized)) {
+        uniqueItems.add(normalized);
+        finalItems.push(item);
+      } else {
+        if (prefix) {
+          console.warn(`${prefix} ⚠️ Item duplicado detectado: "${item}", omitiendo`);
+        }
+      }
+    }
+    
+    if (prefix && finalItems.length !== items.length) {
+      console.debug(`${prefix} ✅ Items validados y corregidos`, {
+        original: items.length,
+        fixed: finalItems.length,
+        removed: items.length - finalItems.length
+      });
+    }
+    
+    return finalItems;
   }
 
   /**

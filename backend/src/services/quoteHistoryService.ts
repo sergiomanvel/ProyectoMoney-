@@ -1,5 +1,6 @@
 import dayjs from 'dayjs';
 import OpenAI from 'openai';
+import { randomUUID } from 'crypto';
 import { pool } from '../server';
 import { GeneratedQuote, QuoteItem } from '../models/Quote';
 import { ProjectContext } from '../utils/contextAnalyzer';
@@ -17,6 +18,7 @@ export interface QuoteHistoryRecordInput {
   generatedBy?: string;
   generatedQuote: GeneratedQuote;
   projectContext?: ProjectContext;
+  traceId?: string;
 }
 
 export interface QuoteHistorySummary {
@@ -62,7 +64,8 @@ export class QuoteHistoryService {
       projectLocation,
       generatedBy,
       generatedQuote,
-      projectContext
+      projectContext,
+      traceId
     } = input;
 
     if (!ownerId) {
@@ -70,18 +73,34 @@ export class QuoteHistoryService {
       return;
     }
 
+    const internalTraceId = traceId || randomUUID();
+    const prefix = `[quote:${internalTraceId}] [history]`;
+    const label = (phase: string) => `${prefix} ${phase}`;
+    console.time(label('recordGeneration'));
+
     try {
-      const itemCount = generatedQuote.items?.length ?? 0;
-      const embeddingText = this.buildEmbeddingText({
+      const itemCount = Array.isArray(generatedQuote.items) ? generatedQuote.items.length : 0;
+      const embeddingTextSource = this.buildEmbeddingText({
         projectDescription: projectDescription ?? generatedQuote.projectDescription,
         sector: sector ?? generatedQuote.sector,
-        items: generatedQuote.items,
+        items: Array.isArray(generatedQuote.items) ? generatedQuote.items : [],
         summary: generatedQuote.summary
       });
-      const embeddingVector = embeddingText
-        ? await this.generateEmbedding(embeddingText)
-        : null;
-      const embeddingJson = embeddingVector ? JSON.stringify(embeddingVector) : null;
+
+      let embeddingJson: string | null = null;
+      if (embeddingTextSource && embeddingTextSource.trim().length > 0) {
+        console.time(label('generateEmbedding'));
+        const embeddingVector = await this.generateEmbedding(embeddingTextSource);
+        console.timeEnd(label('generateEmbedding'));
+        if (embeddingVector && Array.isArray(embeddingVector) && embeddingVector.length > 0) {
+          embeddingJson = JSON.stringify(embeddingVector);
+        } else {
+          console.warn(`${prefix} Embedding vacío o inválido, se omite almacenamiento.`);
+        }
+      } else {
+        console.log(`${prefix} No se generó texto para embedding (descripcion/summary vacíos).`);
+      }
+
       const insertQuery = `
         INSERT INTO quote_history (
           owner_id,
@@ -118,25 +137,30 @@ export class QuoteHistoryService {
         projectLocation ?? projectContext?.locationHint ?? null,
         priceRange ?? null,
         qualityLevel ?? generatedQuote.meta?.qualityLevel ?? null,
-        generatedQuote.total ?? null,
+        typeof generatedQuote.total === 'number' ? generatedQuote.total : null,
         itemCount || null,
-        generatedQuote.items ? JSON.stringify(generatedQuote.items) : null,
+        Array.isArray(generatedQuote.items) ? JSON.stringify(generatedQuote.items) : null,
         projectContext ? JSON.stringify(projectContext) : null,
         embeddingJson,
         generatedBy ?? generatedQuote.meta?.generatedBy ?? null
       ];
 
       await pool.query(insertQuery, values);
+      console.log(`${prefix} 📚 Historial almacenado correctamente`, { ownerId, quoteId, itemCount });
     } catch (error) {
-      console.error('[QuoteHistoryService] Error registrando historial:', error);
+      console.error(`${prefix} Error registrando historial:`, error);
+    } finally {
+      console.timeEnd(label('recordGeneration'));
     }
   }
 
   static async findRelevantHistory(
     ownerId: string,
     sector?: string,
-    limit: number = 5
+    limit: number = 5,
+    traceId?: string
   ): Promise<QuoteHistorySummary[]> {
+    const prefix = traceId ? `[quote:${traceId}] [history]` : '[history]';
     if (!ownerId) return [];
 
     const normalizedOwner = ownerId.trim().toLowerCase();
@@ -187,18 +211,32 @@ export class QuoteHistoryService {
         items: Array.isArray(row.items)
           ? row.items
           : row.items
-            ? JSON.parse(row.items)
+            ? (() => {
+                try {
+                  return JSON.parse(row.items);
+                } catch (parseError) {
+                  console.warn(`${prefix} ⚠️ No se pudo parsear items históricos`, { id: row.id, error: parseError instanceof Error ? parseError.message : parseError });
+                  return [];
+                }
+              })()
             : [],
         projectContext: row.project_context
           ? (typeof row.project_context === 'object'
             ? row.project_context
-            : JSON.parse(row.project_context))
+            : (() => {
+                try {
+                  return JSON.parse(row.project_context);
+                } catch (parseError) {
+                  console.warn(`${prefix} ⚠️ No se pudo parsear project_context`, { id: row.id, error: parseError instanceof Error ? parseError.message : parseError });
+                  return null;
+                }
+              })())
           : null,
         embedding: this.parseEmbedding(row.embedding),
         createdAt: row.created_at ? dayjs(row.created_at).toISOString() : dayjs().toISOString()
       })) as QuoteHistorySummary[];
     } catch (error) {
-      console.error('[QuoteHistoryService] Error obteniendo historial:', error);
+      console.error(`${prefix} Error obteniendo historial:`, error);
       return [];
     }
   }
