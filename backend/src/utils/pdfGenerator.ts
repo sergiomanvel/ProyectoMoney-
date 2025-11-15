@@ -167,8 +167,8 @@ export class PDFGenerator {
   ) {
     const startX = doc.page.margins.left;
     const tableWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-    const headerHeight = 22;
-    const rowHeight = 22;
+    const headerHeight = 24;
+    const rowHeight = 28;
     const columns = {
       desc: startX + 10,
       qty: startX + tableWidth * 0.60,
@@ -180,10 +180,10 @@ export class PDFGenerator {
       const y = doc.y;
       doc.save().rect(startX, y, tableWidth, headerHeight).fill(primaryColor).restore();
       doc.fontSize(10).fillColor('#ffffff');
-      doc.text('Descripción', columns.desc, y + 6);
-      doc.text('Cantidad', columns.qty, y + 6, { width: columns.unit - columns.qty - 6 });
-      doc.text('Precio Unit.', columns.unit, y + 6, { width: columns.total - columns.unit - 6 });
-      doc.text('Total', columns.total, y + 6, { align: 'left' });
+      doc.text('Descripción', columns.desc, y + 7);
+      doc.text('Cantidad', columns.qty, y + 7, { width: columns.unit - columns.qty - 6 });
+      doc.text('Precio Unit.', columns.unit, y + 7, { width: columns.total - columns.unit - 6 });
+      doc.text('Total', columns.total, y + 7, { align: 'left' });
       doc.y = y + headerHeight;
     };
 
@@ -194,14 +194,23 @@ export class PDFGenerator {
         drawHeader();
       }
       const y = doc.y;
+      const descHeight = doc.heightOfString(item.description, {
+        width: columns.qty - columns.desc - 8,
+        lineGap: 2
+      });
+      const effectiveHeight = Math.max(rowHeight, descHeight + 10);
       const bgColor = index % 2 === 0 ? '#f8fafc' : '#ffffff';
-      doc.save().rect(startX, y, tableWidth, rowHeight).fill(bgColor).restore();
-      doc.fontSize(9).fillColor('#1f2937');
-      doc.text(item.description, columns.desc, y + 5, { width: columns.qty - columns.desc - 8 });
-      doc.text(item.quantity.toString(), columns.qty, y + 5, { width: columns.unit - columns.qty - 6, align: 'left' });
-      doc.text(this.formatMoney(item.unitPrice, currency), columns.unit, y + 5, { width: columns.total - columns.unit - 6, align: 'left' });
-      doc.text(this.formatMoney(item.unitPrice * item.quantity, currency), columns.total, y + 5, { align: 'left' });
-      doc.y = y + rowHeight;
+      doc.save().rect(startX, y, tableWidth, effectiveHeight).fill(bgColor).restore();
+      doc.fontSize(9.5).fillColor('#1f2937');
+      doc.text(item.description, columns.desc, y + 6, {
+        width: columns.qty - columns.desc - 8,
+        lineGap: 2,
+        height: effectiveHeight - 12
+      });
+      doc.text(item.quantity.toString(), columns.qty, y + 6, { width: columns.unit - columns.qty - 6, align: 'left' });
+      doc.text(this.formatMoney(item.unitPrice, currency), columns.unit, y + 6, { width: columns.total - columns.unit - 6, align: 'left' });
+      doc.text(this.formatMoney(item.unitPrice * item.quantity, currency), columns.total, y + 6, { align: 'left' });
+      doc.y = y + effectiveHeight + 6;
     };
 
     this.ensureSpace(doc, headerHeight + 10);
