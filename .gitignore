@@ -46,3 +46,4 @@ railway-import-complete.sql
 *.tmp
 *.temp
 
+.vercel

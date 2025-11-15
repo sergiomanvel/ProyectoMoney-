@@ -411,25 +411,28 @@ export function distributeTotalsByWeight(
   const targetSubtotal = targetTotal / (1 + taxPercent / 100);
   const baseSubtotal = targetSubtotal / (marginMultiplier * overheadMultiplier);
   
-  // Precio mínimo por ítem: 5% del subtotal base dividido entre items, con un mínimo absoluto según el sector
-  const minPercent = 0.05; // 5% del subtotal base
-  const minPerItemPercent = baseSubtotal * minPercent / Math.max(items.length, 1);
-  
-  // Precio mínimo absoluto según sector (evita ítems a 13 MXN o cantidades irreales)
-  const sectorMinPrices: Record<string, number> = {
-    software: 800,        // Valores en EUR (equivalente ~900 USD)
-    marketing: 500,
-    construccion: 2500,
-    consultoria: 700,
-    ecommerce: 600,
-    eventos: 500,
-    comercio: 500,
-    manufactura: 1500,
-    formacion: 400,
-    general: 500
+  const itemsCount = Math.max(items.length, 1);
+  const minPercent = 0.03;
+  const minPerItemPercent = baseSubtotal * minPercent / itemsCount;
+
+  const sectorBaseFloors: Record<string, number> = {
+    software: 400,
+    marketing: 300,
+    construccion: 1500,
+    consultoria: 350,
+    ecommerce: 350,
+    eventos: 250,
+    comercio: 300,
+    manufactura: 900,
+    formacion: 250,
+    general: 300
   };
-  
-  const absoluteMinPrice = sectorMinPrices[sector || 'general'] || 1500;
+
+  const avgItemSubtotal = baseSubtotal / itemsCount;
+  const sectorFloor = sectorBaseFloors[sector || 'general'] ?? 300;
+  const dynamicFloor = Math.max(sectorFloor, avgItemSubtotal * 0.25);
+  const cappedFloor = Math.min(dynamicFloor, avgItemSubtotal * 0.8);
+  const absoluteMinPrice = Math.min(Math.max(sectorFloor, cappedFloor), avgItemSubtotal);
   const minPerItem = Math.max(minPerItemPercent, absoluteMinPrice);
   
   if (prefix) {

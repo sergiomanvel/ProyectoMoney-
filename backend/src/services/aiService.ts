@@ -6,7 +6,7 @@ import Ajv from 'ajv';
 import schema from '../schemas/generatedQuote.schema.json';
 import { getAppConfig } from '../utils/appConfig';
 import { refineItemsByContext } from '../utils/itemRefiner';
-import { distributeTotalsByWeight } from '../utils/priceDistributor';
+import { distributeTotalsByWeight, QuoteItem } from '../utils/priceDistributor';
 import { buildQuoteTitle, buildQuoteTerms, buildQuoteTimeline } from '../utils/titleAndTerms';
 import { generateCommercialSummary } from '../utils/commercialSummary';
 import { sectorTemplates, sectorRewritePrefixes } from '../config/sectorTemplates';
@@ -29,6 +29,14 @@ interface QualityConfig {
   maxItems?: number;
   minItems?: number;
 }
+
+type RawAIConcept = string | {
+  title?: string;
+  description?: string;
+  detail?: string;
+  value?: string;
+  summary?: string;
+};
 
 // Cargar .env por si este módulo se importa antes que el server
 dotenv.config();
@@ -581,19 +589,22 @@ export class AIService {
   ): string {
     const sectorVoice = this.getSectorVoice(sector, archContext);
 
-    return `Eres un asistente experto en elaboración de cotizaciones profesionales y reales para empresas y freelancers.
+    return `Eres un consultor senior y copywriter B2B especializado en propuestas del sector ${sector || 'profesional'}.
 
-Tu misión es crear presupuestos claros, adaptados al SECTOR detectado, con lenguaje formal y coherente.
+Tu misión es crear conceptos de cotización claros, accionables y orientados a negocio para empresas reales.
 
-Guía de estilo y terminología que debes seguir sin repetir literalmente los ejemplos:
+Guía de estilo y terminología que debes seguir (inspírate, no copies literal):
 ${sectorVoice}
 
 IMPORTANTE:
-- Nunca inventes servicios absurdos o irreales
+- Cada ítem debe tener formato "Título breve: descripción orientada a valor".
+- Utiliza vocabulario profesional, cifras coherentes y beneficios concretos para el cliente.
+- Divide el trabajo en bloques lógicos (análisis, diseño, ejecución, QA, soporte) alineados con el sector.
+- Nunca inventes servicios absurdos o irreales.
 - Si la descripción no corresponde a un servicio comercial real, responde con: {"error": true, "message": "Descripción no válida para cotización profesional."}
-- Usa siempre tono profesional, español neutro
-- No uses bromas, chistes ni lenguaje informal
-- RESPONDE SOLO JSON, SIN TEXTO ANTES NI DESPUÉS`;
+- Usa siempre tono profesional, español neutro.
+- No uses bromas, chistes ni lenguaje informal.
+- RESPONDE SOLO JSON, SIN TEXTO ANTES NI DESPUÉS.`;
   }
 
   private static getSectorVoice(
@@ -661,6 +672,112 @@ IMPORTANTE:
 - Vocabulario recomendado: alcance del servicio, entregables, cronograma, métricas de éxito, soporte, condiciones comerciales.
 - Ejemplo inspiracional (no copiar literal): "Acompañamiento integral en la implementación del servicio con seguimiento de indicadores clave."`;
     }
+  }
+
+  private static getSectorStructureGuidance(sector?: string): string {
+    switch (sector) {
+      case 'software':
+        return `- Descubrimiento y análisis funcional
+- Diseño UX/UI y prototipado
+- Arquitectura técnica, APIs y bases de datos
+- Desarrollo frontend / móvil
+- Integraciones externas y gestión de datos
+- QA automatizado y pruebas UAT
+- Despliegue, monitoreo y soporte inicial`;
+      case 'marketing':
+        return `- Auditoría y benchmark del ecosistema actual
+- Estrategia multicanal y calendarización
+- Producción de contenido y activos creativos
+- Activación de campañas pagadas y orgánicas
+- Automatizaciones, CRM y nurturing
+- Analítica, optimización y reporting ejecutivo`;
+      case 'ecommerce':
+        return `- Configuración técnica y seguridad de la plataforma
+- UX/UI de catálogo, filtros y checkout
+- Integración de pagos, logística y ERP
+- Automatizaciones de marketing y fidelización
+- Analítica de conversión, testing y growth
+- Capacitación operativa y soporte post-lanzamiento`;
+      case 'consultoria':
+        return `- Diagnóstico, entrevistas y benchmark
+- Modelado de escenarios y hoja de ruta
+- Talleres ejecutivos y gestión del cambio
+- Implementación y acompañamiento
+- Seguimiento de KPIs e iteraciones`;
+      case 'construccion':
+        return `- Estudios previos, licencias y planeación
+- Ejecución por disciplinas (estructura, instalaciones, acabados)
+- Seguridad industrial y control de calidad
+- Puesta en marcha y pruebas funcionales
+- Entrega, documentación y garantías`;
+      case 'formacion':
+        return `- Detección de necesidades y diseño curricular
+- Producción de contenidos multimedia
+- Configuración LMS y soporte tecnológico
+- Facilitación (sincrónica y asincrónica)
+- Evaluación, certificación y seguimiento de impacto`;
+      default:
+        return `- Diagnóstico y definición de objetivos
+- Diseño / planificación del servicio
+- Ejecución por módulos
+- Control de calidad y validación
+- Entrega, transferencia y soporte`;
+    }
+  }
+
+  private static getSectorValueHooks(sector?: string): string[] {
+    const hooks: Record<string, string[]> = {
+      software: [
+        'garantizar escalabilidad, seguridad y observabilidad del SaaS',
+        'acelerar el time-to-market con arquitectura modular',
+        'mejorar la experiencia de usuarios internos y externos',
+        'reducir incidencias operativas mediante QA continuo'
+      ],
+      marketing: [
+        'incrementar notoriedad y consideración de marca',
+        'optimizar la captación de leads cualificados',
+        'mejorar conversiones y ROAS en los canales clave',
+        'alinear contenidos, pauta y CRM con métricas compartidas'
+      ],
+      ecommerce: [
+        'elevar la tasa de conversión del checkout',
+        'integrar catálogo, pagos y logística sin fricciones',
+        'aumentar ticket promedio mediante personalización',
+        'dar visibilidad en tiempo real al stock y fulfillment'
+      ],
+      consultoria: [
+        'tomar decisiones con insights accionables y comparables',
+        'alinear a la dirección con hojas de ruta cuantificables',
+        'capturar eficiencias operativas y financieras',
+        'asegurar adopción mediante acompañamiento ejecutivo'
+      ],
+      construccion: [
+        'minimizar riesgos de obra y desviaciones presupuestales',
+        'garantizar cumplimiento normativo y certificaciones',
+        'coordinar especialidades para entregar sin retrabajos',
+        'asegurar la puesta en marcha con protocolos documentados'
+      ],
+      formacion: [
+        'acelerar la adopción de nuevas competencias críticas',
+        'elevar el desempeño con rutas blended medibles',
+        'ofrecer experiencias inmersivas con recursos multimedia',
+        'demostrar ROI de la formación con indicadores claros'
+      ],
+      general: [
+        'alinear el servicio con objetivos operativos y de negocio',
+        'mejorar la experiencia del usuario final o cliente interno',
+        'reducir errores y tiempos muertos mediante procesos claros',
+        'dejar capacidades instaladas para continuidad del proyecto'
+      ]
+    };
+    return hooks[sector || 'general'] || hooks.general;
+  }
+
+  private static pickValueHook(sector?: string, seed = 0): string | undefined {
+    const hooks = this.getSectorValueHooks(sector);
+    if (!hooks.length) return undefined;
+    const index = Math.abs(seed) % hooks.length;
+    return hooks[index];
   }
 
   private static getProjectContextPrompt(
@@ -1015,6 +1132,12 @@ IMPORTANTE:
 
     // Contexto específico por sector
     const sectorContext = this.getSectorContext(sector, clientProfile, projectType);
+    const structureGuidance = this.getSectorStructureGuidance(sector);
+    const impactHooks = this.getSectorValueHooks(sector);
+    const impactGuidance = impactHooks.length
+      ? impactHooks.map(h => `- ${h}`).join('\n')
+      : '- Enfatiza el impacto tangible para el negocio del cliente.';
+    const keywordHint = this.extractKeywords(projectDescription).slice(0, 8).join(', ');
 
     return `
 Genera una cotización comercial PROFESIONAL y REALISTA.
@@ -1030,6 +1153,9 @@ ${sectorContext}
 
 ${contextNotes}
 
+PALABRAS CLAVE DETECTADAS:
+${keywordHint || '- Usa términos relevantes extraídos de la descripción'}
+
 ${historyNotes}
 ${pricingSection}
 
@@ -1037,6 +1163,12 @@ CLIENTE: ${clientName}
 DESCRIPCIÓN: ${projectDescription}
 RANGO DE PRECIO: ${priceRange}
 IVA: ${cfg.defaultTaxPercent}%
+
+GUÍA DE BLOQUES POR SECTOR:
+${structureGuidance}
+
+IMPACTO / VALOR ESPERADO:
+${impactGuidance}
 
 ESTRUCTURA JSON REQUERIDA:
 {
@@ -1067,13 +1199,13 @@ ESTRUCTURA JSON REQUERIDA:
 }
 
 REGLAS CRÍTICAS:
-✅ Usa entre 3 y 7 ítems coherentes con el sector y la descripción
+✅ Usa entre 7 y 14 ítems coherentes con el sector y la descripción
 ✅ Si cliente menciona taller/mecánica → ítems mecánicos y repuestos
 ✅ Si cliente menciona marketing → contenido, publicación, analítica, estrategia
 ✅ Si cliente menciona tecnología → análisis, desarrollo, pruebas, soporte
 ✅ Si rango de precio está presente → ajusta total dentro del rango
 ✅ Cada ítem debe tener descripción única (NO repetir descripciones)
-✅ Descripciones de ítems entre 15 y 60 caracteres
+✅ Descripciones de ítems entre 40 y 140 caracteres con formato "Título breve: detalle orientado a valor"
 ✅ Calcula correctamente: subtotal, IVA, total
 ✅ Términos profesionales de contratación y pago
 ❌ NO uses palabras inapropiadas, bromas, jerga juvenil
@@ -1372,6 +1504,9 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
       contextualizedItems = sanitizeArchitectureItems(contextualizedItems, archContext.subtype);
       console.log('🏗️ Items sanitizados para modo arquitecto en fallback');
     }
+    if (this.isSoftwareSector(sector)) {
+      contextualizedItems = this.ensureSoftwareConceptsCompleteness(contextualizedItems, projectContext);
+    }
     
     // Distribuir precios
     const distributionStart = performance.now();
@@ -1505,6 +1640,77 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
       };
 
     return fallbackQuote;
+  }
+
+  private static buildLocalConceptLine(
+    baseConcept: string,
+    projectDescription: string,
+    sector?: string,
+    contextTarget?: string
+  ): string {
+    const title = this.formatConceptTitle(baseConcept);
+    const sanitizedTarget = this.sanitizeContextTarget(contextTarget);
+    const keywords = this.extractKeywords(projectDescription || '').slice(0, 2);
+    const focus = sanitizedTarget || (keywords.length ? keywords.join(' y ') : 'las prioridades del proyecto');
+    const hook = this.pickValueHook(sector, baseConcept.length);
+    const detailParts = [`Ejecución orientada a ${focus}`];
+    if (keywords.length) {
+      detailParts.push(`incluyendo requisitos como ${keywords.join(' y ')}`);
+    }
+    if (hook) {
+      detailParts.push(`para ${hook}`);
+    }
+    const detail = this.capitalizeSentence(detailParts.join(', ').replace(/,\spara/, ' para'));
+    return `${title}: ${detail}.`;
+  }
+
+  private static sanitizeContextTarget(target?: string): string | undefined {
+    if (!target) return undefined;
+    return target.replace(/\s+/g, ' ').trim();
+  }
+
+  private static normalizeItemEntry(entry: RawAIConcept): string {
+    if (typeof entry === 'string') {
+      return entry;
+    }
+    if (!entry || typeof entry !== 'object') {
+      return '';
+    }
+    const title = (entry.title || '').trim();
+    const detail = (entry.description || entry.detail || entry.value || entry.summary || '').trim();
+    if (title && detail) {
+      return `${title}: ${detail}`;
+    }
+    return title || detail || '';
+  }
+
+  private static enforceTitleStructure(text: string): string {
+    const trimmed = text.trim();
+    if (!trimmed) return '';
+    if (trimmed.includes(':')) {
+      return trimmed;
+    }
+    const words = trimmed.split(/\s+/);
+    if (words.length < 6) {
+      return `${this.formatConceptTitle(trimmed)}: ${this.capitalizeSentence('Detalle orientado a objetivos')}`;
+    }
+    const titleLength = Math.min(5, Math.ceil(words.length / 3));
+    const title = this.formatConceptTitle(words.slice(0, titleLength).join(' '));
+    const detail = words.slice(titleLength).join(' ');
+    return `${title}: ${this.capitalizeSentence(detail)}`;
+  }
+
+  private static formatConceptTitle(text: string): string {
+    if (!text) return 'Concepto';
+    const sanitized = text.replace(/[.:]+$/, '').trim();
+    if (!sanitized) return 'Concepto';
+    return sanitized.charAt(0).toUpperCase() + sanitized.slice(1);
+  }
+
+  private static capitalizeSentence(text: string): string {
+    const trimmed = text.trim();
+    if (!trimmed) return '';
+    return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
   }
 
   /**
@@ -2307,6 +2513,9 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
       contextualizedItems = sanitizeArchitectureItems(contextualizedItems, archContext.subtype);
       console.log(`${prefix} 🏗️ Items sanitizados para modo arquitecto`);
     }
+    if (this.isSoftwareSector(sector)) {
+      contextualizedItems = this.ensureSoftwareConceptsCompleteness(contextualizedItems, projectContext);
+    }
     
     // 3. Calcular precios
     const pricingStart = performance.now();
@@ -2510,6 +2719,18 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
     // Construir contexto adicional del proyecto
     const contextBlock = this.getProjectContextPrompt(projectContext, clientProfile, projectType, region);
     const sectorContextBlock = this.getSectorContext(sector, clientProfile, projectType);
+    const structureGuidance = this.getSectorStructureGuidance(sector);
+    const impactHooks = this.getSectorValueHooks(sector);
+    const impactGuidance = impactHooks.length
+      ? impactHooks.map(h => `- ${h}`).join('\n')
+      : '- Destaca siempre el beneficio directo para el cliente.';
+    const keywordHint = this.extractKeywords(projectDescription).slice(0, 8).join(', ');
+    const baseCount = baseConcepts.length || 7;
+    const minItems = Math.max(5, Math.min(7, baseCount));
+    const maxItems = Math.max(minItems + 2, Math.min(14, Math.max(baseCount, 10)));
+    const scaleHint = projectContext?.scaleOverride
+      ? `Escala estimada del proyecto: ${projectContext.scaleOverride}.`
+      : '';
 
     console.time(label('openai.contextualize.buildPrompt'));
     // Si es arquitectura y modo arquitecto, usar prompt especial
@@ -2519,6 +2740,11 @@ DEVUELVE SOLO JSON VÁLIDO. SIN TEXTO ANTES NI DESPUÉS.`;
 A partir de la descripción del proyecto y de una lista base de fases, reescribe los conceptos para que suenen profesionales y propios de un despacho de arquitectura.
 
 PROYECTO: "${projectDescription}"
+
+${scaleHint}
+
+PALABRAS CLAVE DEL PROYECTO:
+${keywordHint || '- Utiliza los elementos relevantes de la descripción'}
 
 ${contextBlock}${historyBlock}${pricingBlock}
 
@@ -2539,8 +2765,10 @@ ${qualityStyle || '- Mantén el nivel estándar indicado.'}
 - Enfócate en: diseño, documentación técnica, supervisión, cumplimiento normativo
 - Usa tono técnico y profesional de despacho de arquitectura
 
-DEVUELVE SOLO JSON con este array:
-["Concepto 1 adaptado", "Concepto 2 adaptado", ...]`;
+DEVUELVE SOLO JSON con este formato:
+[
+  { "title": "Título específico", "description": "Descripción orientada a valor (60-140 caracteres)" }
+]`;
     } else {
       prompt = `${roleDeclaration}
 A partir de un sector y una descripción de proyecto, adapta los conceptos de una cotización para que suenen específicos, profesionales y relacionados con el caso.
@@ -2548,10 +2776,21 @@ A partir de un sector y una descripción de proyecto, adapta los conceptos de un
 PROYECTO: "${projectDescription}"
 SECTOR: ${sector}
 
+${scaleHint}
+
+PALABRAS CLAVE DEL PROYECTO:
+${keywordHint || '- Utiliza los elementos principales descritos por el cliente'}
+
 ${contextBlock}${historyBlock}${pricingBlock}
 
 CONTEXTO DEL SECTOR:
 ${sectorContextBlock}
+
+GUÍA DE BLOQUES ESPERADOS:
+${structureGuidance}
+
+IMPACTO / BENEFICIO A RESALTAR:
+${impactGuidance}
 
 CONCEPTOS BASE A CONTEXTUALIZAR:
 ${baseConcepts.map((c, i) => `${i + 1}. ${c}`).join('\n')}
@@ -2596,6 +2835,7 @@ REGLAS ESTRICTAS DE CALIDAD:
    - ❌ INCORRECTO: Copiar literalmente partes de la descripción del proyecto
 
 IMPORTANTE:
+- Genera entre ${minItems} y ${maxItems} conceptos finales (uno por fase lógica).
 - Pautas de estilo (no copies literal, solo inspírate):
 ${sectorVoice}
 - Ajustes de calidad:
@@ -2605,8 +2845,13 @@ ${qualityStyle || '- Mantén el nivel estándar indicado.'}
 - NO inventes servicios absurdos ni coloquiales
 - Verifica que cada concepto tenga sentido completo y no esté cortado
 
-DEVUELVE SOLO JSON con este array de conceptos completos y profesionales:
-["Concepto 1 adaptado completo", "Concepto 2 adaptado completo", ...]`;
+DEVUELVE SOLO JSON con este array de objetos:
+[
+  {
+    "title": "Título breve y específico",
+    "description": "Descripción orientada a valor (60-140 caracteres, menciona objetivo o impacto)."
+  }
+]`;
     }
     console.timeEnd(label('openai.contextualize.buildPrompt'));
 
@@ -2724,27 +2969,27 @@ DEVUELVE SOLO JSON con este array de conceptos completos y profesionales:
       } else {
         // Para otros sectores - mejorar para evitar frases cortadas
         if (desc.includes('clínica') || desc.includes('médica') || desc.includes('citas')) {
-          contextInfo = 'del sistema de gestión de citas y pacientes';
+          contextInfo = 'el sistema de gestión de citas y pacientes';
         } else if (desc.includes('instagram') || desc.includes('facebook') || desc.includes('redes') || desc.includes('social')) {
-          contextInfo = 'de la estrategia en redes sociales';
+          contextInfo = 'la estrategia en redes sociales';
         } else if (desc.includes('tienda') || desc.includes('shopify') || desc.includes('ecommerce') || desc.includes('tienda online')) {
-          contextInfo = 'de la tienda online';
+          contextInfo = 'la tienda online';
         } else if (desc.includes('web') || desc.includes('sitio') || desc.includes('página') || desc.includes('website')) {
-          contextInfo = 'del sitio web';
+          contextInfo = 'el sitio web corporativo';
         } else if (desc.includes('app') || desc.includes('móvil') || desc.includes('aplicación')) {
-          contextInfo = 'de la aplicación móvil';
+          contextInfo = 'la aplicación móvil';
         } else if (desc.includes('reforma') || desc.includes('obra') || desc.includes('construcción')) {
-          contextInfo = 'de la obra';
+          contextInfo = 'la obra en ejecución';
         } else if (desc.includes('evento') || desc.includes('eventos')) {
-          contextInfo = 'del evento';
+          contextInfo = 'el evento descrito';
         } else if (desc.includes('comercio') || desc.includes('tienda física') || desc.includes('retail')) {
-          contextInfo = 'del punto de venta';
+          contextInfo = 'el punto de venta';
         } else if (desc.includes('manufactura') || desc.includes('producción') || desc.includes('fabricación')) {
-          contextInfo = 'del proceso de producción';
+          contextInfo = 'el proceso de producción';
         } else if (desc.includes('formación') || desc.includes('capacitación') || desc.includes('curso')) {
-          contextInfo = 'del programa de formación';
+          contextInfo = 'el programa de formación';
         } else if (desc.includes('consultoría') || desc.includes('consultoria') || desc.includes('asesoría')) {
-          contextInfo = 'del proyecto de consultoría';
+          contextInfo = 'el proyecto de consultoría';
         }
       }
       
@@ -2752,31 +2997,24 @@ DEVUELVE SOLO JSON con este array de conceptos completos y profesionales:
       // Esto evita frases como "Configuración de para de la estrategia"
       if (contextInfo) {
         const prefixTrimmed = prefix.trim();
-        // Si el prefijo termina con "para" o "de", y el contextInfo empieza con "de" o "del", combinar correctamente
         if (prefixTrimmed.endsWith(' para') || prefixTrimmed.endsWith(' de')) {
-          // Remover "para" o "de" del final del prefijo si el contextInfo ya tiene "de" o "del"
-          if (contextInfo.startsWith('de ') || contextInfo.startsWith('del ')) {
-            adapted = `${prefixTrimmed.replace(/\s+(para|de)$/, '')} ${contextInfo}`;
-          } else {
-            adapted = `${prefixTrimmed} ${contextInfo}`;
-          }
+          adapted = `${prefixTrimmed.replace(/\s+(para|de)$/, '')} ${contextInfo}`;
         } else {
-        adapted = `${prefix} ${contextInfo}`;
+          adapted = `${prefix} ${contextInfo}`;
         }
       } else {
         adapted = prefix;
       }
-      
-      // Validar longitud mínima y estructura completa
-      if (adapted.length < 20) {
-        // Si es muy corto, añadir contexto adicional
-        if (!contextInfo) {
-          adapted = `${adapted} del proyecto`;
-        }
-      }
+
+      const descriptionLine = this.buildLocalConceptLine(
+        adapted,
+        projectDescription,
+        sector,
+        contextInfo
+      );
       
       return {
-        description: adapted,
+        description: descriptionLine,
         quantity: 1,
         unitPrice: 0,
         total: 0
@@ -3104,9 +3342,10 @@ IMPORTANTE: Respeta los conceptos definidos, solo enriquece título y términos.
    * Valida y corrige items generados por OpenAI
    * Detecta y corrige frases cortadas, repetitivas o incompletas
    */
-  private static validateAndFixItems(items: string[], traceId?: string): string[] {
+  private static validateAndFixItems(items: RawAIConcept[], traceId?: string): string[] {
     const prefix = traceId ? `[quote:${traceId}]` : '';
     const fixedItems: string[] = [];
+    const sourceItems = Array.isArray(items) ? items : [];
     
     // Patrones de frases cortadas o repetitivas
     const incompletePatterns = [
@@ -3120,8 +3359,9 @@ IMPORTANTE: Respeta los conceptos definidos, solo enriquece título y términos.
       /\s+para\s+de\s+la\s+/i, // "para de la"
     ];
     
-    for (let i = 0; i < items.length; i++) {
-      let item = items[i]?.trim() || '';
+    for (let i = 0; i < sourceItems.length; i++) {
+      let item = this.normalizeItemEntry(sourceItems[i]);
+      item = item.trim();
       
       if (!item || item.length === 0) {
         if (prefix) {
@@ -3129,6 +3369,8 @@ IMPORTANTE: Respeta los conceptos definidos, solo enriquece título y términos.
         }
         continue;
       }
+
+      item = this.enforceTitleStructure(item);
       
       // Validar longitud mínima (20 caracteres)
       if (item.length < 20) {
@@ -3222,10 +3464,14 @@ IMPORTANTE: Respeta los conceptos definidos, solo enriquece título y términos.
           console.warn(`${prefix} ⚠️ Item sigue siendo muy corto después de correcciones: "${item}", usando original`);
         }
         // Si después de las correcciones sigue siendo muy corto, usar el original o añadir contexto
-        item = items[i]?.trim() || '';
+        item = this.normalizeItemEntry(sourceItems[i]).trim();
         if (item.length < 20) {
           item = `${item} del proyecto`;
         }
+      }
+
+      if (!/[.!?]$/.test(item)) {
+        item = `${item}.`;
       }
       
       // Añadir a la lista de items validados
@@ -3234,28 +3480,160 @@ IMPORTANTE: Respeta los conceptos definidos, solo enriquece título y términos.
     
     // Validar que no haya items duplicados
     const uniqueItems = new Set<string>();
+    const uniqueTitles = new Set<string>();
     const finalItems: string[] = [];
     for (const item of fixedItems) {
       const normalized = item.toLowerCase().trim();
-      if (!uniqueItems.has(normalized)) {
-        uniqueItems.add(normalized);
-        finalItems.push(item);
-      } else {
+      const normalizedTitle = normalized.split(':')[0];
+      if (uniqueItems.has(normalized) || uniqueTitles.has(normalizedTitle)) {
         if (prefix) {
           console.warn(`${prefix} ⚠️ Item duplicado detectado: "${item}", omitiendo`);
         }
+        continue;
+      }
+      uniqueItems.add(normalized);
+      uniqueTitles.add(normalizedTitle);
+      finalItems.push(item);
+    }
+    
+    const maxItems = 14;
+    let clippedItems = finalItems;
+    if (finalItems.length > maxItems) {
+      clippedItems = finalItems.slice(0, maxItems);
+      if (prefix) {
+        console.warn(`${prefix} ℹ️ Reducción de items a ${maxItems} para mantener consistencia.`);
       }
     }
     
-    if (prefix && finalItems.length !== items.length) {
+    if (prefix && clippedItems.length !== sourceItems.length) {
       console.debug(`${prefix} ✅ Items validados y corregidos`, {
-        original: items.length,
-        fixed: finalItems.length,
-        removed: items.length - finalItems.length
+        original: sourceItems.length,
+        fixed: clippedItems.length,
+        removed: sourceItems.length - clippedItems.length
       });
     }
     
-    return finalItems;
+    return clippedItems;
+  }
+
+  private static ensureSoftwareConceptsCompleteness(items: QuoteItem[], context?: ProjectContext): QuoteItem[] {
+    if (!context?.softwareProfile) {
+      return items;
+    }
+    const profile = context.softwareProfile;
+    let result: QuoteItem[] = [...items];
+
+    type Rule = {
+      key: string;
+      flag: boolean;
+      keywords: string[][];
+      fallback?: string;
+      enforceOnly?: boolean;
+    };
+
+    const rules: Rule[] = [
+      {
+        key: 'webAdmin',
+        flag: profile.hasWebAdmin,
+        keywords: [['panel', 'admin'], ['dashboard'], ['backoffice']],
+        fallback: 'Diseño y desarrollo del panel web de administración con dashboards para gestión operativa y visibilidad de KPIs.',
+        enforceOnly: true
+      },
+      {
+        key: 'mobileApp',
+        flag: profile.hasMobileApp,
+        keywords: [['app', 'movil'], ['aplicacion', 'movil'], ['app', 'campo']],
+        fallback: 'Desarrollo de aplicación móvil híbrida para operadores, registro de rutas, incidencias y tiempos en terreno.'
+      },
+      {
+        key: 'api',
+        flag: profile.hasApi,
+        keywords: [[' api'], ['api '], ['endpoints'], ['rest'], ['backend', 'api']],
+        fallback: 'Diseño e implementación de API REST en Node.js y base de datos PostgreSQL para sincronizar panel web y servicios externos.'
+      },
+      {
+        key: 'analytics',
+        flag: profile.hasAnalytics,
+        keywords: [['analitica'], ['metricas'], ['kpi'], ['dashboard']],
+        fallback: 'Implementación de módulo de analítica inicial con KPIs de negocio y panel de visualización ejecutivo.'
+      },
+      {
+        key: 'integrations',
+        flag: profile.hasIntegrations,
+        keywords: [['integracion'], ['servicios', 'externos'], ['mapa'], ['mapbox'], ['google', 'maps'], ['erp'], ['crm']],
+        fallback: `Integración controlada con servicios externos (${profile.integrationTargets.join(', ') || 'plataformas críticas'}) y manejo de errores.`
+      },
+      {
+        key: 'auth',
+        flag: profile.isSaaS,
+        keywords: [['autenticacion'], ['roles'], ['permisos'], ['multiempresa'], ['multi-empresa'], ['multi tenant'], ['saas']],
+        fallback: 'Sistema de autenticación multi-empresa, gestión de usuarios, roles y permisos diferenciados para administradores y clientes.'
+      },
+      {
+        key: 'deployment',
+        flag: profile.isSaaS,
+        keywords: [['despliegue'], ['infraestructura'], ['cloud'], ['ci/cd'], ['pipeline'], ['monitor'], ['alertas']],
+        fallback: 'Configuración de infraestructura en la nube, pipelines CI/CD y monitorización básica para el despliegue inicial.'
+      },
+      {
+        key: 'qa',
+        flag: profile.estimatedComplexity === 'high',
+        keywords: [['qa'], ['pruebas'], ['testing'], ['calidad']],
+        fallback: 'Pruebas funcionales end-to-end, control de calidad y fase de estabilización previa a la salida a producción.'
+      },
+      {
+        key: 'project',
+        flag: profile.estimatedComplexity === 'high',
+        keywords: [['gestion', 'proyecto'], ['coordinacion'], ['project', 'management']],
+        fallback: 'Gestión de proyecto, coordinación con stakeholders y seguimiento de hitos durante todo el desarrollo.'
+      }
+    ];
+
+    // 1) Remover módulos que no aplican
+    for (const rule of rules) {
+      if (rule.flag || rule.enforceOnly) continue;
+      result = result.filter(item => !this.matchesSoftwareKeywords(item.description, rule.keywords));
+    }
+
+    // 2) Asegurar módulos cuando corresponda
+    for (const rule of rules) {
+      if (!rule.flag || !rule.fallback) continue;
+      if (this.matchesSoftwareKeywordsInList(result, rule.keywords)) continue;
+      result.push(this.createConceptItem(rule.fallback));
+    }
+
+    return result;
+  }
+
+  private static matchesSoftwareKeywords(description: string, keywordGroups: string[][]): boolean {
+    const normalized = this.normalizeConceptText(description);
+    return keywordGroups.some(group => group.every(token => normalized.includes(token.trim())));
+  }
+
+  private static matchesSoftwareKeywordsInList(items: QuoteItem[], keywordGroups: string[][]): boolean {
+    return items.some(item => this.matchesSoftwareKeywords(item.description, keywordGroups));
+  }
+
+  private static createConceptItem(description: string): QuoteItem {
+    return {
+      description,
+      quantity: 1,
+      unitPrice: 0,
+      total: 0
+    };
+  }
+
+  private static normalizeConceptText(text: string): string {
+    return text
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+  }
+
+  private static isSoftwareSector(sector?: string): boolean {
+    if (!sector) return false;
+    const key = sector.toLowerCase();
+    return key === 'software' || key === 'software_it' || key.includes('software');
   }
 
   /**

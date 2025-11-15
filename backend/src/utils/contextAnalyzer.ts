@@ -1,5 +1,18 @@
 import { ProjectScale } from '../config/sectorCostProfiles';
 
+export interface SoftwareProjectProfile {
+  isSaaS: boolean;
+  hasWebAdmin: boolean;
+  hasMobileApp: boolean;
+  hasApi: boolean;
+  hasAnalytics: boolean;
+  hasIntegrations: boolean;
+  integrationTargets: string[];
+  estimatedComplexity: 'low' | 'medium' | 'high';
+  complexityScore: number;
+  descriptionLength: number;
+}
+
 export interface ProjectContext {
   scaleOverride?: ProjectScale;
   urgencyMultiplier?: number;
@@ -11,6 +24,7 @@ export interface ProjectContext {
   region?: string; // Comunidad autónoma o región detectada
   clientProfile?: 'autonomo' | 'pyme' | 'agencia' | 'startup' | 'enterprise';
   projectType?: string; // Tipo de proyecto específico del sector
+  softwareProfile?: SoftwareProjectProfile;
 }
 
 const ENTERPRISE_KEYWORDS = ['integral', 'llave en mano', 'llave-en-mano', 'completo', '360', 'full', 'turnkey', 'global'];
@@ -376,6 +390,109 @@ export function analyzeProjectContext(projectDescription: string, priceRange?: s
     }
   }
 
+  if (sectorHint) {
+    const softwareAliases = new Set(['software', 'software_it', 'software desarrollo', 'software / desarrollo']);
+    if (softwareAliases.has(sectorHint.toLowerCase())) {
+      context.softwareProfile = detectSoftwareProfile(desc);
+    }
+  }
+
   return context;
+}
+
+function detectSoftwareProfile(desc: string): SoftwareProjectProfile {
+  const normalized = desc.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const lengthScore = normalized.length > 600 ? 1 : 0;
+
+  const matchAny = (patterns: RegExp[]) => patterns.some(regex => regex.test(normalized));
+
+  const hasWebAdmin = matchAny([
+    /\bpanel\s+(web|admin|administrador)/,
+    /\bdashboard\b/,
+    /\bbackoffice\b/,
+    /interfaz\s+de\s+administracion/,
+    /portal\s+de\s+gestion/
+  ]);
+
+  const hasMobileApp = matchAny([
+    /\bapp\s+m(ovil|óvil)/,
+    /\baplicacion\s+m(ovil|óvil)/,
+    /\bandroid\b/,
+    /\bios\b/,
+    /aplicacion\s+hibrida/,
+    /conductores\s+.*app/
+  ]);
+
+  const hasApi = matchAny([
+    /\bapi\b/,
+    /\brest\b/,
+    /\bgraphql\b/,
+    /\bendpoints?\b/,
+    /\bwebhooks?\b/
+  ]);
+
+  const hasAnalytics = matchAny([
+    /\bmetricas?\b/,
+    /\banalitica\b/,
+    /\banalytics?\b/,
+    /\breportes?\b/,
+    /\bkpi?s?\b/
+  ]);
+
+  const integrationCatalog: Array<{ regex: RegExp; label: string }> = [
+    { regex: /google\s+maps?/, label: 'Google Maps' },
+    { regex: /mapbox/, label: 'Mapbox' },
+    { regex: /stripe/, label: 'Stripe' },
+    { regex: /paypal/, label: 'PayPal' },
+    { regex: /salesforce/, label: 'Salesforce' },
+    { regex: /sap/, label: 'SAP' },
+    { regex: /hubspot/, label: 'HubSpot' },
+    { regex: /zapier/, label: 'Zapier' },
+    { regex: /\bcrm\b/, label: 'CRM' },
+    { regex: /\berp\b/, label: 'ERP' },
+    { regex: /pasarelas?\s+de\s+pago/, label: 'Pasarelas de pago' }
+  ];
+  const integrationTargets = integrationCatalog
+    .filter(entry => entry.regex.test(normalized))
+    .map(entry => entry.label);
+  const hasIntegrations = integrationTargets.length > 0;
+
+  const isSaaS = matchAny([
+    /\bsaas\b/,
+    /software\s+as\s+a\s+service/,
+    /plataforma\s+como\s+servicio/,
+    /multi\s*tenant/,
+    /multi\s*empresa/,
+    /multi\s*cliente/
+  ]);
+
+  let score = 0;
+  if (hasWebAdmin) score += 2;
+  if (hasMobileApp) score += 3;
+  if (hasApi) score += 2;
+  if (hasAnalytics) score += 1;
+  if (hasIntegrations) score += 1;
+  if (isSaaS) score += 2;
+  score += lengthScore;
+
+  let estimatedComplexity: SoftwareProjectProfile['estimatedComplexity'] = 'low';
+  if (score >= 7) {
+    estimatedComplexity = 'high';
+  } else if (score >= 4) {
+    estimatedComplexity = 'medium';
+  }
+
+  return {
+    isSaaS,
+    hasWebAdmin,
+    hasMobileApp,
+    hasApi,
+    hasAnalytics,
+    hasIntegrations,
+    integrationTargets,
+    estimatedComplexity,
+    complexityScore: score,
+    descriptionLength: normalized.length
+  };
 }
 
